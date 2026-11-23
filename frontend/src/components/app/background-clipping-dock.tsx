@@ -9,6 +9,7 @@ import {
   Film,
   Layers,
   Loader2,
+  Share2,
   X,
   Zap,
 } from "lucide-react";
@@ -268,7 +269,10 @@ export function BackgroundClippingDock() {
 
           {/* Footer Info */}
           <div className="px-3 py-1.5 bg-muted/30 border-t border-border/60 text-[10px] text-muted-foreground flex items-center justify-between">
-            <span className="truncate mr-2">Browse freely while clips process</span>
+            <span className="flex items-center gap-1.5 truncate mr-2 text-emerald-600 dark:text-emerald-400 font-medium">
+              <Share2 className="size-3" />
+              <span>Auto-Upload Ready</span>
+            </span>
             <Link href="/list" className="hover:underline text-foreground font-semibold shrink-0">
               All Tasks &rarr;
             </Link>

@@ -1082,6 +1082,32 @@ class TaskService(ClipEditingMixin):
                 stage_timings_json=json.dumps(stage_timings),
                 error_code="",
             )
+
+            # Autonomous Social Upload: when auto_upload is enabled in workflow options
+            try:
+                task_record = await self.task_repo.get_task_by_id(self.db, task_id)
+                wf_opts = (task_record or {}).get("workflow_options") or {}
+                if isinstance(wf_opts, str):
+                    try:
+                        wf_opts = json.loads(wf_opts)
+                    except Exception:
+                        wf_opts = {}
+                is_auto_upload = bool(
+                    wf_opts.get("auto_upload")
+                    or (isinstance(getattr(spec, "workflow_settings", None), dict) and spec.workflow_settings.get("auto_upload"))
+                )
+                if is_auto_upload and clip_ids:
+                    from .auto_upload_service import AutoUploadService
+                    auto_svc = AutoUploadService(self.db, self.config, queue_adapter=self.queue_adapter)
+                    await auto_svc.auto_upload_task_clips(
+                        user_id=user_id,
+                        task_id=task_id,
+                        team_id=(task_record or {}).get("team_id"),
+                        top_clips_only=1,
+                    )
+                    logger.info("Autonomous upload executed for completed task %s", task_id)
+            except Exception as auto_up_err:
+                logger.warning("Auto-upload check for task %s encountered: %s", task_id, auto_up_err)
             await self._send_completion_notification_if_needed(
                 task_id=task_id,
                 clips_count=len(clip_ids),

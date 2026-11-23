@@ -168,6 +168,14 @@ async def process_video_task(
             )
 
             logger.info(f"Task {task_id} completed successfully")
+
+            # Autonomous social upload: If auto_upload is enabled, dispatch clips immediately
+            try:
+                from ..services.auto_upload_service import maybe_trigger_auto_upload
+                await maybe_trigger_auto_upload(task_id, user_id)
+            except Exception as auto_up_err:
+                logger.warning(f"Auto-upload hook for task {task_id} failed: {auto_up_err}")
+
             return result
 
         except TaskRunBusy:

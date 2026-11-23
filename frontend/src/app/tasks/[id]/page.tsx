@@ -82,6 +82,7 @@ import { cn } from "@/lib/utils";
 import { formatClock } from "@/lib/source-range";
 import { FontSelectOption, type FontOption } from "@/components/font-select-option";
 import { ClipPostList, ClipPublishButton, useSocialPostToasts } from "@/components/clip-publisher";
+import { AutoUploadModule } from "@/components/app/auto-upload-module";
 import {
   ACTIVE_POST_STATUSES,
   type SocialConnection,
@@ -1366,6 +1367,14 @@ export default function TaskPage() {
           <ul className="space-y-1 text-xs text-muted-foreground">
             {clipFxNotes(focusedClip.fx_meta).map((note) => <li key={note}>{t(`fx.${note}`)}</li>)}
           </ul>
+        )}
+        {focusedClip && (
+          <AutoUploadModule
+            taskId={params.id}
+            clipId={focusedClip.id}
+            onUploaded={loadSocialPosts}
+            className="my-3"
+          />
         )}
         {focusedClip && (
           <ClipPostList

@@ -28,6 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AutoUploadModule } from "@/components/app/auto-upload-module";
 import { cn } from "@/lib/utils";
 
 interface TrendingVideo {
@@ -293,6 +294,7 @@ export default function TrendingPage() {
               chunk_duration: parseInt(settings.chunkDuration || "180", 10),
               ai_voice_hook: isVoiceHook,
               ai_voice_style: settings.aiVoiceStyle || "viral_guy",
+              auto_upload: settings.autoUpload !== undefined ? Boolean(settings.autoUpload) : true,
             },
           };
 
@@ -351,6 +353,13 @@ export default function TrendingPage() {
         add_subtitles: true,
         cut_long_pauses: true,
         remove_filler_words: true,
+        workflow_settings: {
+          chunked_download: true,
+          chunk_duration: 180,
+          ai_voice_hook: true,
+          ai_voice_style: "viral_guy",
+          auto_upload: true,
+        },
       };
 
       // Try primary task creation endpoint
@@ -421,6 +430,13 @@ export default function TrendingPage() {
         add_subtitles: true,
         cut_long_pauses: true,
         remove_filler_words: true,
+        workflow_settings: {
+          chunked_download: true,
+          chunk_duration: 180,
+          ai_voice_hook: true,
+          ai_voice_style: "viral_guy",
+          auto_upload: true,
+        },
       };
 
       // Try trending autoclip endpoint first (resolves raw live channel URLs to playable sources)
@@ -1107,6 +1123,9 @@ export default function TrendingPage() {
                 </span>
               </div>
             </div>
+
+            {/* Auto-Upload Distribution Integration */}
+            <AutoUploadModule />
 
             {/* Input & Presets */}
             <div className="rounded-xl border bg-card p-4 shadow-2xs space-y-3">
