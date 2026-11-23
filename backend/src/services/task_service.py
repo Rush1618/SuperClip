@@ -970,6 +970,24 @@ class TaskService(ClipEditingMixin):
                         "workflow_meta": meta or None,
                     }
 
+                meta = copy.deepcopy(workflow_fields.get("workflow_meta") or segment.get("workflow_meta") or {})
+                if not meta.get("social_captions") and clip_info.get("text"):
+                    try:
+                        from .social_caption_service import generate_all_platform_captions
+                        target_platform = (task_row.get("workflow_options") or {}).get("target_platform")
+                        meta["social_captions"] = await generate_all_platform_captions(clip_info, config=self.config)
+                        if target_platform:
+                            meta["target_platform"] = target_platform
+                        if not meta.get("post_caption"):
+                            if target_platform and meta["social_captions"].get(target_platform):
+                                meta["post_caption"] = meta["social_captions"][target_platform].get("caption", "")
+                            elif meta["social_captions"].get("tiktok"):
+                                meta["post_caption"] = meta["social_captions"]["tiktok"].get("caption", "")
+                    except Exception as caption_err:
+                        logger.warning("Auto-generating social captions for clip failed: %s", caption_err)
+                if meta:
+                    workflow_fields["workflow_meta"] = meta
+
                 async with self._processing_transaction(task_id):
                     await check_cancelled()
                     clip_order = max(clip_ids_by_order, default=0) + 1

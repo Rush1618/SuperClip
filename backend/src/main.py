@@ -99,6 +99,12 @@ def create_app(
             except Exception:
                 logger.warning("Could not publish the API media volume id", exc_info=True)
 
+            try:
+                from .services.trending_service import start_continuous_learning_agent
+                start_continuous_learning_agent()
+            except Exception as e:
+                logger.warning("Could not start continuous viral learning agent: %s", e)
+
             yield
         finally:
             logger.info("🛑 Shutting down SupoClip API...")
@@ -234,6 +240,7 @@ def create_app(
     from .api.routes.teams import router as teams_router
     from .api.routes.mcp_oauth import consent_router as mcp_oauth_consent_router
     from .api.routes.mcp_oauth import internal_router as mcp_oauth_internal_router
+    from .api.routes.trending import router as trending_router
 
     app.include_router(media_router)
     app.include_router(feedback_router)
@@ -242,6 +249,7 @@ def create_app(
     app.include_router(api_keys_router)
     app.include_router(account_router)
     app.include_router(social_router)
+    app.include_router(trending_router)
     app.include_router(email_preferences_router)
     app.include_router(feature_flags_router)
     app.include_router(fx_router)

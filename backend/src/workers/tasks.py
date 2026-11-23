@@ -3,6 +3,7 @@ Worker tasks - background jobs processed by arq workers.
 """
 
 import logging
+import os
 from typing import Dict, Any, Optional
 import json
 from arq import Retry
@@ -407,7 +408,7 @@ class WorkerSettings:
 
     # Worker pool settings. Cron jobs live on CronWorkerSettings so they never
     # take one of these slots or pile up behind a long render.
-    max_jobs = 4  # Process up to 4 jobs simultaneously
+    max_jobs = int(os.getenv("ARQ_MAX_JOBS", "8"))  # Process up to 8 jobs simultaneously per worker process
     cron_jobs = []
 
     on_job_start = on_video_job_begin

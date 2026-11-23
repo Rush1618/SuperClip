@@ -10,6 +10,7 @@ import {
 import { ClipCover, ScoreRing } from "@/components/app/clip-cover";
 import DynamicVideoPlayer from "@/components/dynamic-video-player";
 import { TranscriptPreview } from "@/components/transcript-preview";
+import { PlatformCaptionsSection } from "@/components/app/platform-captions";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -210,21 +211,21 @@ export function ClipFocus({ clip, taskId, index, total, busy, editable, onNaviga
 
   return (
     <Dialog open={clip !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-h-[92dvh] max-w-5xl gap-0 overflow-hidden p-0 md:grid-cols-[auto_1fr]">
+      <DialogContent className="h-[min(92dvh,750px)] max-h-[92dvh] max-w-5xl gap-0 overflow-hidden p-0 grid grid-cols-1 md:grid-cols-[auto_1fr]">
         {clip && (
           <>
-            <div className="relative flex items-center justify-center bg-stone-950 p-3 md:p-4">
-              <DynamicVideoPlayer key={clip.id} src={getClipUrl(clip.video_url, clip.filename)} autoPlay className="h-[min(58dvh,560px)]! md:h-[min(80dvh,640px)]!" />
+            <div className="relative flex items-center justify-center bg-stone-950 p-3 md:p-4 overflow-hidden">
+              <DynamicVideoPlayer key={clip.id} src={getClipUrl(clip.video_url, clip.filename)} autoPlay className="h-[min(42dvh,420px)]! md:h-[min(80dvh,640px)]!" />
             </div>
-            <div className="flex min-h-0 flex-col overflow-y-auto">
-              <div className="flex items-center justify-between gap-2 border-b px-5 py-3 pr-12 text-xs text-muted-foreground">
+            <div className="flex h-full min-h-0 flex-col overflow-hidden">
+              <div className="shrink-0 flex items-center justify-between gap-2 border-b bg-background px-5 py-3 pr-12 text-xs text-muted-foreground">
                 <span className="tabular-nums">{t("position", { current: index + 1, total })}</span>
                 <div className="flex items-center gap-1">
                   <Button size="icon-sm" variant="ghost" onClick={() => onNavigate(-1)} aria-label={t("previous")}><ChevronLeft className="size-4" /></Button>
                   <Button size="icon-sm" variant="ghost" onClick={() => onNavigate(1)} aria-label={t("next")}><ChevronRight className="size-4" /></Button>
                 </div>
               </div>
-              <div className="space-y-5 p-5">
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-5 p-5 overscroll-contain">
                 <div>
                   {isPart(clip) && (
                     <p className="mb-1 text-xs font-medium tabular-nums text-muted-foreground">
@@ -285,9 +286,10 @@ export function ClipFocus({ clip, taskId, index, total, busy, editable, onNaviga
                 )}
 
                 {clip.text && <TranscriptPreview text={clip.text} clipTitle={clipTitle(clip, t)} />}
+                <PlatformCaptionsSection clip={clip} taskId={taskId} />
                 {children}
               </div>
-              <div className="mt-auto flex flex-wrap items-center gap-2 border-t bg-muted/30 px-5 py-3">
+              <div className="shrink-0 flex flex-wrap items-center gap-2 border-t bg-muted/40 px-5 py-3">
                 <Button size="sm" onClick={onDownload} disabled={busy}>
                   {busy ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}{t("download")}
                 </Button>
@@ -439,33 +441,91 @@ export function ProcessingPanel({ status, progress, message, phaseSince, sourceS
     return remaining < 50 ? t("eta.underMinute")
       : t("eta.minutes", { count: Math.max(1, Math.round(remaining / 60)) });
   }
+  const pct = Math.max(status === "queued" ? 0 : 1, Math.min(100, Math.round(progress)));
+  const currentStepIndex = Math.min(Math.max(0, step), STEPS.length - 1);
+  const currentStepObj = STEPS[currentStepIndex];
+  const currentStageName = stepLabel(t, workflow, currentStepObj.id);
+
   return (
-    <section className="relative isolate" aria-live="polite">
+    <section className="relative isolate rounded-2xl border bg-card/60 p-5 shadow-xs backdrop-blur-xs" aria-live="polite">
       <div aria-hidden className="pointer-events-none absolute inset-x-0 -inset-y-16 -z-10 overflow-hidden [mask-image:radial-gradient(60%_70%_at_30%_50%,black,transparent)]">
         <div className="aura-blob absolute -top-10 left-[-5%] h-72 w-[60%] rounded-full opacity-45 blur-3xl"
           style={{ background: `radial-gradient(circle at 40% 50%, oklch(0.87 0.06 ${stepHue(step)}), transparent 65%)` }} />
       </div>
-      <div className="flex items-baseline justify-between gap-6">
-        <p className="font-display text-2xl font-bold tracking-tight tabular-nums">{timeLeftLabel()}</p>
-        {clip && !SINGLE_OUTPUT.has(workflow) && <p className="text-sm tabular-nums text-muted-foreground">{workflow === "series" ? t("partOf", { n: clip.current, total: clip.total }) : t("clipOf", clip)}</p>}
+
+      {/* Top Header: Percentage & Current Stage vs Estimated Time */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="font-display text-4xl font-extrabold tracking-tight tabular-nums text-foreground">
+              {pct}%
+            </span>
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+              {status === "queued" ? (
+                <span>In Queue</span>
+              ) : (
+                <>
+                  <span className="size-1.5 rounded-full bg-primary animate-pulse" />
+                  <span>Stage {currentStepIndex + 1} of 4: {currentStageName}</span>
+                </>
+              )}
+            </span>
+          </div>
+
+          {/* Live Progress Stage Message */}
+          {status !== "queued" && (
+            <div className="mt-2 flex items-center gap-2 text-xs font-medium text-foreground/80">
+              <span className="relative flex size-2 shrink-0">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+              </span>
+              <span className="truncate">
+                {/^(downloading|preparing|generating|transcribing|reading|mapping|planning|picking|choosing|writing|checking|finding|creating|reframing|adding|rendering|cutting|saving)\b/i.test(message)
+                  ? message
+                  : currentStageName}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="text-left sm:text-right">
+          <p className="font-display text-2xl font-bold tracking-tight tabular-nums text-foreground">{timeLeftLabel()}</p>
+          {clip && !SINGLE_OUTPUT.has(workflow) && (
+            <p className="mt-0.5 text-xs font-medium tabular-nums text-muted-foreground">
+              {workflow === "series" ? t("partOf", { n: clip.current, total: clip.total }) : t("clipOf", clip)}
+            </p>
+          )}
+        </div>
       </div>
+
       {recovery && (
         <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2.5 text-sm" role="status" aria-label={t("recovery.heading")}>
           <Loader2 aria-hidden className="mt-0.5 size-4 shrink-0 animate-spin text-amber-700 dark:text-amber-400" />
           <p>{t(`recovery.messages.${delayMessage}`)}</p>
         </div>
       )}
-      <div className="mt-4 h-2 rounded-full bg-stone-200/60 dark:bg-stone-800/60" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-label={t("percentComplete", { progress })}>
+
+      {/* Enhanced Progress Bar */}
+      <div className="mt-5 h-2.5 w-full overflow-hidden rounded-full bg-stone-200/80 dark:bg-stone-800/80" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-label={t("percentComplete", { progress })}>
         <div className="metal-flow h-full rounded-full transition-[width] duration-700 ease-out" style={{ width: `${Math.max(progress, 1)}%` }} />
       </div>
-      <ol className="mt-2.5 grid text-xs" style={{ gridTemplateColumns: STEPS.map((s, i) => `${s.until - (i ? STEPS[i - 1].until : 0)}fr`).join(" ") }}>
+
+      {/* Stage Timeline Stepper */}
+      <ol className="mt-3 grid text-xs gap-1" style={{ gridTemplateColumns: STEPS.map((s, i) => `${s.until - (i ? STEPS[i - 1].until : 0)}fr`).join(" ") }}>
         {STEPS.map((s, i) => (
-          <li key={s.id} className={cn("flex items-center gap-1 truncate pr-2", i < step ? "text-foreground/60" : i === step ? "font-medium text-foreground" : "text-foreground/35")}>
-            {i < step && <Check className="size-3 shrink-0" />}
+          <li key={s.id} className={cn("flex items-center gap-1.5 truncate pr-2 py-0.5", i < step ? "text-emerald-600 dark:text-emerald-400" : i === step ? "font-medium text-foreground" : "text-foreground/35")}>
+            {i < step ? (
+              <Check className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400 stroke-[2.5]" />
+            ) : i === step ? (
+              <Loader2 className="size-3 shrink-0 animate-spin text-primary" />
+            ) : (
+              <span className="size-1.5 rounded-full bg-foreground/25 shrink-0" />
+            )}
             <span className="truncate">{stepLabel(t, workflow, s.id)}</span>
           </li>
         ))}
       </ol>
+
       <p className="mt-3 text-xs text-muted-foreground">{t("leavePage")}</p>
     </section>
   );

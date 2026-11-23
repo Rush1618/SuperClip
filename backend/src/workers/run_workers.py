@@ -26,8 +26,18 @@ def embed_cron_worker(value: str | None = None) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def num_video_workers() -> int:
+    """Number of parallel video worker processes to run."""
+    try:
+        return max(1, int(os.getenv("NUM_VIDEO_WORKERS", "3")))
+    except Exception:
+        return 3
+
+
 def worker_settings(embed_cron: bool | None = None) -> list[str]:
-    settings = [VIDEO_WORKER]
+    # Spawn multiple parallel video workers to maximize CPU/network throughput and prevent idle stalls
+    workers_count = num_video_workers()
+    settings = [VIDEO_WORKER for _ in range(workers_count)]
     if embed_cron_worker() if embed_cron is None else embed_cron:
         settings.append(CRON_WORKER)
     return settings

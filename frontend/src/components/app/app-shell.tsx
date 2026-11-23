@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Bot, ChartColumn, CornerDownLeft, Film, ListChecks, ListOrdered, Play, Plus, Search, Settings, Share2, Shield, Sparkles, Target, Users,
+  Bot, ChartColumn, CornerDownLeft, Film, ListChecks, ListOrdered, Play, Plus, Search, Settings, Share2, Shield, Sparkles, Target, TrendingUp, Users,
 } from "lucide-react";
 import { useSession } from "@/lib/auth-client";
 import { useBillingSummary } from "@/hooks/use-billing-summary";
@@ -28,10 +28,11 @@ import type { Workflow } from "@/lib/workflows";
 
 // `mobile: false` keeps an item out of the five-slot mobile tab bar.
 // `social: true` items only show when social publishing is enabled for the user.
-type NavItem = { href: string; labelKey: "create" | "library" | "social" | "analytics" | "agents" | "settings"; icon: typeof Film; match: (path: string) => boolean; mobile?: boolean; social?: boolean };
+type NavItem = { href: string; labelKey: "create" | "trending" | "library" | "social" | "analytics" | "agents" | "settings"; icon: typeof Film; match: (path: string) => boolean; mobile?: boolean; social?: boolean };
 
 const NAV: NavItem[] = [
   { href: "/", labelKey: "create", icon: Sparkles, match: (p) => p === "/" },
+  { href: "/trending", labelKey: "trending", icon: TrendingUp, match: (p) => p.startsWith("/trending") },
   { href: "/list", labelKey: "library", icon: Film, match: (p) => p.startsWith("/list") || p.startsWith("/tasks") },
   { href: "/settings/social", labelKey: "social", icon: Share2, match: (p) => p.startsWith("/settings/social"), social: true },
   { href: "/analytics", labelKey: "analytics", icon: ChartColumn, match: (p) => p.startsWith("/analytics"), social: true },
@@ -87,7 +88,28 @@ export function AppShell({ children, tour }: { children: React.ReactNode; /** Se
   useAppTheme(Boolean(user));
   const admin = Boolean((user as { is_admin?: boolean } | undefined)?.is_admin);
   const socialAccess = useSocialAccess(Boolean(user));
-  const labeled = NAV.map((item) => ({ ...item, label: t(`nav.${item.labelKey}`) }));
+
+  const getNavLabel = (key: NavItem["labelKey"]) => {
+    if (key === "trending") return "Trending";
+    try {
+      const res = t(`nav.${key}`);
+      if (res && !res.includes("shell.nav.")) return res;
+    } catch {
+      // fallback
+    }
+    const defaults: Record<string, string> = {
+      create: "Create",
+      trending: "Trending",
+      library: "Library",
+      social: "Social",
+      analytics: "Analytics",
+      agents: "Agents & API",
+      settings: "Settings",
+    };
+    return defaults[key] || "Trending";
+  };
+
+  const labeled = NAV.map((item) => ({ ...item, label: getNavLabel(item.labelKey) }));
   const nav = labeled.filter((item) => !item.social || socialAccess === true);
   const mobileNav = nav.filter((item) => item.mobile !== false);
   const items = admin ? [...nav, { href: "/admin", label: t("nav.admin"), icon: Shield, match: (p: string) => p.startsWith("/admin") }] : nav;
@@ -244,6 +266,7 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
     const offered = availableWorkflows(workflowsInfo);
     const actions: PaletteEntry[] = [
       { id: "new", label: t("nav.newGeneration"), hint: t("palette.newHint"), href: "/", icon: Plus },
+      { id: "trending", label: "Trending", hint: "Viral YouTube & Twitch clips & live hype monitor", href: "/trending", icon: TrendingUp },
       ...WORKFLOW_SHORTCUTS.filter((shortcut) => offered.has(shortcut.id)).map((shortcut) => ({
         id: `new-${shortcut.id}`, label: tHome(`palette.${shortcut.id}`), href: `/?workflow=${shortcut.id}`, icon: shortcut.icon,
       })),

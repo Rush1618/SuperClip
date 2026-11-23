@@ -109,6 +109,8 @@ from ..media.upload_ingest import (
     upload_needs_remote_copy,
 )
 from ..media_storage import MediaStorage
+
+BIG_VIDEO_THRESHOLD_SECONDS = 600  # 10 minutes: Chunked streaming & audio-first applied only to big videos / streams
 from ..source_range import SourceRange, cut_audio_range, private_link, shift_segment
 from ..media.mp4_fragments import fragmented_mp4_duration
 from ..media.ffmpeg import (
@@ -2116,7 +2118,7 @@ class VideoService:
                             skip_proxy=True, progress_callback=progress_callback,
                         )
                         video_path = preserve_geo_restriction(video_path, exc if video_path is None else None)
-                elif proxy_configured(runtime_config) and video_id and not cached_full:
+                elif video_id and not cached_full and (source_duration is None or float(source_duration) >= BIG_VIDEO_THRESHOLD_SECONDS):
                     def _resolve_analysis():
                         def _download_full():
                             return resolve_full_youtube_download(

@@ -1160,12 +1160,28 @@ def download_audio_for_job(
             )
             return existing
         if not proxy_configured(runtime):
-            raise YouTubeDownloadError("Audio-first download requires YOUTUBE_PROXY_URL")
-        # Hold the per-video lock through download and manifest publication.
-        # Concurrent jobs must not overwrite the same native downloader files.
-        downloaded = download_audio(
-            url, video_id, directory / f"audio-{AUDIO_POLICY}", task_id=task_id, budget=budget,
-        )
+            import yt_dlp
+            dest = directory / f"audio-{AUDIO_POLICY}.m4a"
+            ydl_opts = {
+                "outtmpl": str(directory / f"audio-{AUDIO_POLICY}.%(ext)s"),
+                "format": "ba/b",
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "m4a",
+                }],
+                "noplaylist": True,
+                "overwrites": True,
+                "quiet": True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+            downloaded = dest if dest.exists() else directory / f"audio-{AUDIO_POLICY}"
+        else:
+            # Hold the per-video lock through download and manifest publication.
+            # Concurrent jobs must not overwrite the same native downloader files.
+            downloaded = download_audio(
+                url, video_id, directory / f"audio-{AUDIO_POLICY}", task_id=task_id, budget=budget,
+            )
         manifest["audio"] = downloaded.name
         _save_manifest(directory, manifest)
     _persist_named(video_id, downloaded)

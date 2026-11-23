@@ -514,16 +514,78 @@ class SocialService:
             raise SocialValidationError("Unsupported social platform")
         if not (clip.get("text") or "").strip():
             raise SocialValidationError("This clip has no transcript to draft a caption from.")
-        if not self.config.anthropic_api_key:
-            raise SocialProviderUnavailable("Caption generation requires ANTHROPIC_API_KEY on the server.")
+
+        meta = clip.get("workflow_meta") or {}
+        social_captions = meta.get("social_captions") or {}
+        if provider in social_captions and social_captions[provider].get("caption"):
+            return {
+                "caption": social_captions[provider]["caption"],
+                "title": social_captions[provider].get("title", ""),
+                "hashtags": social_captions[provider].get("hashtags", []),
+            }
+
+        if not self.config.anthropic_api_key and not self.config.llm:
+            raise SocialProviderUnavailable("Caption generation requires an LLM configured on the server.")
         try:
-            caption = await generate_social_caption(self.config.anthropic_api_key, clip, provider)
+            caption = await generate_social_caption(
+                self.config.anthropic_api_key,
+                clip,
+                provider,
+                config=self.config,
+            )
         except Exception as exc:
             logger.warning("Social caption generation failed (%s)", type(exc).__name__)
             raise SocialProviderUnavailable(
                 "Couldn't generate a caption. Try again or write your own."
             ) from exc
         return {"caption": caption}
+
+    async def get_all_clip_captions(
+        self,
+        user_id: str,
+        *,
+        task_id: str,
+        clip_id: str,
+        team_id: Optional[str] = None,
+        force_refresh: bool = False,
+    ) -> Dict[str, Any]:
+        import copy
+        import json
+        from sqlalchemy import text as sa_text
+        from .social_caption_service import generate_all_platform_captions
+
+        task = await self.task_repo.get_task_by_id(self.db, task_id)
+        task_allowed = (
+            task is not None
+            and (
+                task.get("team_id") == team_id
+                if team_id
+                else task.get("team_id") is None and task.get("user_id") == user_id
+            )
+        )
+        if not task_allowed:
+            raise SocialNotFound("Task not found")
+        clip = await self.clip_repo.get_clip_by_id(self.db, clip_id)
+        if not clip or clip.get("task_id") != task_id:
+            raise SocialNotFound("Clip not found")
+
+        meta = copy.deepcopy(clip.get("workflow_meta") or {})
+        existing = meta.get("social_captions")
+        if existing and not force_refresh:
+            return {"captions": existing}
+
+        if not (clip.get("text") or "").strip():
+            raise SocialValidationError("This clip has no transcript to draft captions from.")
+
+        captions = await generate_all_platform_captions(clip, config=self.config)
+        meta["social_captions"] = captions
+        await self.db.execute(
+            sa_text("UPDATE generated_clips SET workflow_meta = :workflow_meta WHERE id = :clip_id"),
+            {"clip_id": clip_id, "workflow_meta": json.dumps(meta)},
+        )
+        await self.db.commit()
+        return {"captions": captions}
+
 
     async def create_post(
         self,

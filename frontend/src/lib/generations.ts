@@ -8,6 +8,9 @@ export interface GenerationSummary extends WorkflowSummaryFields {
   source_type: string;
   source_url?: string | null;
   status: string;
+  progress?: number | null;
+  progress_message?: string | null;
+  thumbnail_url?: string | null;
   clips_count: number;
   top_virality_score?: number | null;
   cover_clip_id?: string | null;
@@ -22,8 +25,10 @@ export async function fetchGenerations(): Promise<GenerationSummary[]> {
   return (data.tasks || []) as GenerationSummary[];
 }
 
-export function coverClipUrl(generation: Pick<GenerationSummary, "id" | "cover_clip_id">) {
-  return generation.cover_clip_id ? `/api/tasks/${generation.id}/clips/${generation.cover_clip_id}/file` : null;
+export function coverClipUrl(generation: Pick<GenerationSummary, "id" | "cover_clip_id"> & { thumbnail_url?: string | null }) {
+  if (generation.cover_clip_id) return `/api/tasks/${generation.id}/clips/${generation.cover_clip_id}/file`;
+  if (generation.thumbnail_url) return generation.thumbnail_url;
+  return null;
 }
 
 export function formatClipDuration(seconds: number) {

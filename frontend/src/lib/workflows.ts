@@ -77,6 +77,7 @@ export type WorkflowOptions = {
   topic?: string;
   part_count?: number;
   instructions?: string;
+  target_platform?: string;
   /** Advanced settings, only what differs from the defaults. See `backend/src/workflows/settings.py`. */
   advanced?: Record<string, WorkflowSettingValue>;
 };
@@ -161,6 +162,7 @@ export type WorkflowPlanPart = {
   delivers?: string;
   ends_on?: string;
   post_caption?: string;
+  social_captions?: Record<string, { title?: string; caption?: string; hashtags?: string[] }>;
   first_unit?: number;
   last_unit?: number;
   ranges?: SourceRange[];
@@ -280,6 +282,7 @@ export type WorkflowMeta = {
   delivers?: string;
   ends_on?: string;
   post_caption?: string;
+  social_captions?: Record<string, { title?: string; caption?: string; hashtags?: string[] }>;
   first_unit?: number;
   last_unit?: number;
   // topic

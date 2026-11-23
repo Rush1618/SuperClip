@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { PaymentFailedBanner } from "@/components/payment-failed-banner";
@@ -12,7 +13,7 @@ import { SubscriptionCancelBanner } from "@/components/subscription-cancel-banne
 import { DeleteAccountSection } from "@/components/delete-account-section";
 import { EmailChangeSection } from "@/components/email-change-section";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useSession } from "@/lib/auth-client";
@@ -38,10 +39,14 @@ import { UpgradeThankYou } from "@/components/billing/upgrade-thank-you";
 import { toast } from "sonner";
 import { track } from "@/lib/datafast";
 import Link from "next/link";
-import { AlertCircle, Bot, Check, ChevronRight, Clock, CreditCard, Info, Languages, Loader2, Mail, Megaphone, Share2, Type, Users } from "lucide-react";
+import { AlertCircle, Bot, Check, ChevronRight, Clock, Cpu, CreditCard, ExternalLink, FastForward, Info, Languages, Layers, Loader2, Mail, Megaphone, Mic, PlayCircle, RefreshCw, Send, Share2, Sparkles, Type, Users, Volume2, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DEFAULT_SITE_URL, GITHUB_URL } from "@/lib/site";
 import { FontSelectOption, type FontOption } from "@/components/font-select-option";
+import { SocialProviderIcon } from "@/components/social-provider-icon";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { PROVIDER_LABELS, type SocialConnection, type SocialProviderId, type SocialProviderStatus } from "@/lib/social";
 
 interface UserPreferences {
   fontFamily: string;
@@ -72,6 +77,118 @@ export default function SettingsPage() {
   const { data: session, isPending, refetch: refetchSession } = useSession();
   const socialAccess = useSocialAccess(Boolean(session?.user));
   const { teams, teamsAvailable } = useWorkspace(Boolean(session?.user));
+
+  // Auto-Clip Mode & AI Radar Settings
+  const [autoClipNiche, setAutoClipNiche] = useState("all");
+  const [autoClipRegion, setAutoClipRegion] = useState("US");
+  const [autoClipTimeframe, setAutoClipTimeframe] = useState("24h");
+  const [autoClipMaxClips, setAutoClipMaxClips] = useState("5");
+  const [autoClipHealing, setAutoClipHealing] = useState(true);
+  const [autoClipImpWords, setAutoClipImpWords] = useState(true);
+  const [autoClipLearning, setAutoClipLearning] = useState(true);
+  const [localModel, setLocalModel] = useState("ollama:qwen2.5:7b");
+  const [chunkedDownload, setChunkedDownload] = useState(true);
+  const [chunkDuration, setChunkDuration] = useState("180");
+  const [aiVoiceHook, setAiVoiceHook] = useState(true);
+  const [aiVoiceStyle, setAiVoiceStyle] = useState("viral_guy");
+
+  // Social Connections & Direct Post state
+  const [socialProviders, setSocialProviders] = useState<SocialProviderStatus[]>([]);
+  const [socialConnections, setSocialConnections] = useState<SocialConnection[]>([]);
+  const [loadingSocial, setLoadingSocial] = useState(false);
+  const [directPostOpen, setDirectPostOpen] = useState(false);
+  const [directPostTitle, setDirectPostTitle] = useState("");
+  const [directPostCaption, setDirectPostCaption] = useState("");
+  const [directPostProvider, setDirectPostProvider] = useState<SocialProviderId>("youtube");
+  const [isPosting, setIsPosting] = useState(false);
+
+  const loadSocialData = useCallback(async () => {
+    setLoadingSocial(true);
+    try {
+      const [provRes, connRes] = await Promise.all([
+        fetch("/api/social/providers", { cache: "no-store" }),
+        fetch("/api/social/connections", { cache: "no-store" }),
+      ]);
+      if (provRes.ok) {
+        const pData = await provRes.json();
+        setSocialProviders(pData.providers || []);
+      }
+      if (connRes.ok) {
+        const cData = await connRes.json();
+        setSocialConnections(cData.connections || []);
+      }
+    } catch {}
+    setLoadingSocial(false);
+  }, []);
+
+  useEffect(() => {
+    if (session?.user?.id) {
+      void loadSocialData();
+    }
+  }, [session?.user?.id, loadSocialData]);
+
+  const handleDirectPost = async () => {
+    if (!directPostCaption.trim()) {
+      toast.error("Please enter a caption or description for your post");
+      return;
+    }
+    setIsPosting(true);
+    try {
+      const res = await fetch("/api/social/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: directPostProvider,
+          title: directPostTitle.trim() || "Trending Viral Clip",
+          caption: directPostCaption.trim(),
+          privacy_level: "public",
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || err.error || "Failed to publish post");
+      }
+      toast.success(`Post successfully queued for publishing to ${directPostProvider}!`);
+      setDirectPostOpen(false);
+      setDirectPostCaption("");
+      setDirectPostTitle("");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to publish post");
+    } finally {
+      setIsPosting(false);
+    }
+  };
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("supoclip_autoclip_settings");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed.niche) setAutoClipNiche(parsed.niche);
+        if (parsed.region) setAutoClipRegion(parsed.region);
+        if (parsed.timeframe) setAutoClipTimeframe(parsed.timeframe);
+        if (parsed.maxClips) setAutoClipMaxClips(parsed.maxClips);
+        if (parsed.speechHealing !== undefined) setAutoClipHealing(parsed.speechHealing);
+        if (parsed.impWords !== undefined) setAutoClipImpWords(parsed.impWords);
+        if (parsed.learningLoop !== undefined) setAutoClipLearning(parsed.learningLoop);
+        if (parsed.localModel) setLocalModel(parsed.localModel);
+        if (parsed.chunkedDownload !== undefined) setChunkedDownload(parsed.chunkedDownload);
+        if (parsed.chunkDuration) setChunkDuration(parsed.chunkDuration);
+        if (parsed.aiVoiceHook !== undefined) setAiVoiceHook(parsed.aiVoiceHook);
+        if (parsed.aiVoiceStyle) setAiVoiceStyle(parsed.aiVoiceStyle);
+      }
+    } catch {}
+  }, []);
+
+  const updateAutoClipSetting = (key: string, val: any) => {
+    try {
+      const current = JSON.parse(localStorage.getItem("supoclip_autoclip_settings") || "{}");
+      current[key] = val;
+      localStorage.setItem("supoclip_autoclip_settings", JSON.stringify(current));
+      toast.success("Auto-Clip settings saved");
+    } catch {}
+  };
+
   const t = useTranslations("settings");
   const common = useTranslations("common");
   const tLang = useTranslations("language");
@@ -485,6 +602,447 @@ export default function SettingsPage() {
           </div>
         </Section>
 
+        {/* Auto-Clip Mode & AI Radar Settings */}
+        <Section
+          icon={<Sparkles className="size-4 text-amber-500" />}
+          title="Auto-Clip Mode & AI Radar"
+          description="Configure default niche, automated clipping rules, speech healing, and continuous learning"
+        >
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="autoclip-default-niche" className="text-sm">Default Content Niche</Label>
+                <Select
+                  value={autoClipNiche}
+                  onValueChange={(val) => {
+                    setAutoClipNiche(val);
+                    updateAutoClipSetting("niche", val);
+                  }}
+                >
+                  <SelectTrigger id="autoclip-default-niche" className="h-9 w-full text-xs">
+                    <SelectValue placeholder="Select niche" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Trending (Curated)</SelectItem>
+                    <SelectItem value="gaming">Gaming & Esports</SelectItem>
+                    <SelectItem value="podcasts">Podcasts & Interviews</SelectItem>
+                    <SelectItem value="tech">Tech & AI</SelectItem>
+                    <SelectItem value="entertainment">Entertainment & Challenges</SelectItem>
+                    <SelectItem value="education">Education & Business</SelectItem>
+                    <SelectItem value="irl">IRL & Live Streamers</SelectItem>
+                    <SelectItem value="music">Music (Official)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">Filters out copyright music tracks unless Music is selected.</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="autoclip-default-region" className="text-sm">Default Region / Country</Label>
+                <Select
+                  value={autoClipRegion}
+                  onValueChange={(val) => {
+                    setAutoClipRegion(val);
+                    updateAutoClipSetting("region", val);
+                  }}
+                >
+                  <SelectTrigger id="autoclip-default-region" className="h-9 w-full text-xs">
+                    <SelectValue placeholder="Select region" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="US">United States 🇺🇸</SelectItem>
+                    <SelectItem value="GLOBAL">Worldwide 🌍</SelectItem>
+                    <SelectItem value="GB">United Kingdom 🇬🇧</SelectItem>
+                    <SelectItem value="CA">Canada 🇨🇦</SelectItem>
+                    <SelectItem value="IN">India 🇮🇳</SelectItem>
+                    <SelectItem value="JP">Japan 🇯🇵</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">Sets geographic trending algorithm feeds for YouTube & Twitch.</p>
+              </div>
+
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="autoclip-default-timeframe" className="text-sm">Discovery Timeframe</Label>
+                <Select
+                  value={autoClipTimeframe}
+                  onValueChange={(val) => {
+                    setAutoClipTimeframe(val);
+                    updateAutoClipSetting("timeframe", val);
+                  }}
+                >
+                  <SelectTrigger id="autoclip-default-timeframe" className="h-9 w-full text-xs">
+                    <SelectValue placeholder="Select timeframe" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="24h">Recent 24 Hours ⚡ (Recommended - Only Breakout Content)</SelectItem>
+                    <SelectItem value="all">All-Time Trending Feed</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">Restricts trending discoveries strictly to videos published within the last 24 hours.</p>
+              </div>
+
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="autoclip-default-max-clips" className="text-sm">Max Clips to Extract per Video</Label>
+                <Select
+                  value={autoClipMaxClips}
+                  onValueChange={(val) => {
+                    setAutoClipMaxClips(val);
+                    updateAutoClipSetting("maxClips", val);
+                  }}
+                >
+                  <SelectTrigger id="autoclip-default-max-clips" className="h-9 w-full text-xs">
+                    <SelectValue placeholder="Select max clips" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="3">3 Clips (Fastest turnaround)</SelectItem>
+                    <SelectItem value="5">5 Clips (Recommended - High Engagement)</SelectItem>
+                    <SelectItem value="8">8 Clips (Comprehensive highlight package)</SelectItem>
+                    <SelectItem value="10">10 Clips (Maximum extraction)</SelectItem>
+                    <SelectItem value="auto">Auto (AI-determined optimal moments)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">Controls how many viral clips the AI extracts from each video or live stream.</p>
+              </div>
+            </div>
+
+            <div className="border-t pt-3 space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <Label htmlFor="speech-healing-toggle" className="flex-col items-start gap-0.5">
+                  <span className="text-sm font-medium">AI Speech Recognition Self-Healing</span>
+                  <span className="text-xs font-normal text-muted-foreground">
+                    Automatically detect and repair phonetics, gamer slangs, and misheard creator words using local Ollama.
+                  </span>
+                </Label>
+                <Switch
+                  id="speech-healing-toggle"
+                  checked={autoClipHealing}
+                  onCheckedChange={(val) => {
+                    setAutoClipHealing(val);
+                    updateAutoClipSetting("speechHealing", val);
+                  }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <Label htmlFor="imp-words-toggle" className="flex-col items-start gap-0.5">
+                  <span className="text-sm font-medium">Important Words (&ldquo;Imp Words&rdquo;) Extraction</span>
+                  <span className="text-xs font-normal text-muted-foreground">
+                    Highlight high-impact keywords in generated clips and YouTuber-to-audience captions.
+                  </span>
+                </Label>
+                <Switch
+                  id="imp-words-toggle"
+                  checked={autoClipImpWords}
+                  onCheckedChange={(val) => {
+                    setAutoClipImpWords(val);
+                    updateAutoClipSetting("impWords", val);
+                  }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <Label htmlFor="continuous-learning-toggle" className="flex-col items-start gap-0.5">
+                  <span className="text-sm font-medium">Continuous Viral Learning Loop</span>
+                  <span className="text-xs font-normal text-muted-foreground">
+                    Autonomous agent runs in the background to learn hook formulas and increase virality scores.
+                  </span>
+                </Label>
+                <Switch
+                  id="continuous-learning-toggle"
+                  checked={autoClipLearning}
+                  onCheckedChange={(val) => {
+                    setAutoClipLearning(val);
+                    updateAutoClipSetting("learningLoop", val);
+                  }}
+                />
+              </div>
+
+              {/* Local AI Model Engine */}
+              <div className="border-t pt-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="local-model-select" className="text-sm font-medium flex items-center gap-1.5">
+                    <Bot className="size-4 text-primary" />
+                    <span>Local AI Model Engine (Precision Editing & Viral Cues)</span>
+                  </Label>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                    <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    RTX 4050 GPU Active
+                  </span>
+                </div>
+                <Select
+                  value={localModel}
+                  onValueChange={(val) => {
+                    setLocalModel(val);
+                    updateAutoClipSetting("localModel", val);
+                  }}
+                >
+                  <SelectTrigger id="local-model-select" className="h-9 w-full text-xs">
+                    <SelectValue placeholder="Select Local Model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ollama:qwen2.5:7b">Ollama: Qwen 2.5 7B (Recommended - RTX 4050 GPU Accelerated)</SelectItem>
+                    <SelectItem value="ollama:qwen3.5:4b">Ollama: Qwen 3.5 4B (Fastest Local Inference)</SelectItem>
+                    <SelectItem value="ollama:qwen3.5:9b">Ollama: Qwen 3.5 9B (High-Precision Reasoning)</SelectItem>
+                    <SelectItem value="ollama:glm-4.7-flash:latest">Ollama: GLM-4.7 Flash (Deep Context Model)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  Zero token cost. Runs directly on your local GPU to tag high-retention moments, zoom cuts, sound effect beats, and generate punchy viral headlines.
+                </p>
+              </div>
+
+              {/* Chunked Streaming & Instant Pipelining */}
+              <div className="border-t pt-3 space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <Label htmlFor="chunked-download-toggle" className="flex-col items-start gap-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium">Chunked Streaming & Instant Pipelining</span>
+                      <span className="rounded-full bg-primary/10 text-primary px-1.5 py-0.2 text-[9px] font-bold">⚡ Big Videos</span>
+                    </div>
+                    <span className="text-xs font-normal text-muted-foreground">
+                      Automatically activates on big videos (&gt;10 min) and long live streams. Downloads in rolling chunks so clipping starts in ~20s without waiting for the full video. Short videos (&lt;10m) process directly in a single pass.
+                    </span>
+                  </Label>
+                  <Switch
+                    id="chunked-download-toggle"
+                    checked={chunkedDownload}
+                    onCheckedChange={(val) => {
+                      setChunkedDownload(val);
+                      updateAutoClipSetting("chunkedDownload", val);
+                    }}
+                  />
+                </div>
+
+                {chunkedDownload && (
+                  <div className="pl-3 border-l-2 border-primary/30 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="chunk-duration-select" className="text-xs text-muted-foreground">Pipeline Chunk Window Size</Label>
+                      <span className="text-xs font-semibold text-primary">{chunkDuration}s ({Math.round(parseInt(chunkDuration) / 60)} min)</span>
+                    </div>
+                    <Select
+                      value={chunkDuration}
+                      onValueChange={(val) => {
+                        setChunkDuration(val);
+                        updateAutoClipSetting("chunkDuration", val);
+                      }}
+                    >
+                      <SelectTrigger id="chunk-duration-select" className="h-8 text-xs">
+                        <SelectValue placeholder="Select chunk window" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="120">120 Seconds (2 min chunks - Ultra-fast initial clip)</SelectItem>
+                        <SelectItem value="180">180 Seconds (3 min chunks - Recommended sweet spot)</SelectItem>
+                        <SelectItem value="300">300 Seconds (5 min chunks - Wider narrative context)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+
+              {/* Attention-Grabbing AI Voice Hooks */}
+              <div className="border-t pt-3 space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <Label htmlFor="ai-voice-hook-toggle" className="flex-col items-start gap-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <Mic className="size-3.5 text-primary" />
+                      <span className="text-sm font-medium">AI Viral Attention Voice Hooks</span>
+                    </div>
+                    <span className="text-xs font-normal text-muted-foreground">
+                      Synthesize an energetic 3-second spoken intro hook (&ldquo;Wait till you see this...&rdquo;) with smart audio ducking to prevent viewer swipe-away.
+                    </span>
+                  </Label>
+                  <Switch
+                    id="ai-voice-hook-toggle"
+                    checked={aiVoiceHook}
+                    onCheckedChange={(val) => {
+                      setAiVoiceHook(val);
+                      updateAutoClipSetting("aiVoiceHook", val);
+                    }}
+                  />
+                </div>
+
+                {aiVoiceHook && (
+                  <div className="pl-3 border-l-2 border-primary/30 space-y-2">
+                    <Label htmlFor="voice-style-select" className="text-xs text-muted-foreground">Voice Hook Persona & Tone</Label>
+                    <Select
+                      value={aiVoiceStyle}
+                      onValueChange={(val) => {
+                        setAiVoiceStyle(val);
+                        updateAutoClipSetting("aiVoiceStyle", val);
+                      }}
+                    >
+                      <SelectTrigger id="voice-style-select" className="h-8 text-xs">
+                        <SelectValue placeholder="Select Voice Style" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="viral_guy">Viral Creator (Male - Energetic, High-Pitched Hook)</SelectItem>
+                        <SelectItem value="viral_girl">Trendsetter (Female - Punchy, Dynamic Expression)</SelectItem>
+                        <SelectItem value="deep_narrator">Deep Cinematic (Authoritative, Dramatic Hook)</SelectItem>
+                        <SelectItem value="documentary">Storyteller (Smooth, Curiosity-Driven)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[10px] text-muted-foreground flex items-center gap-1">
+                      <Volume2 className="size-3 text-muted-foreground" />
+                      <span>Original audio is smoothly ducked down to 35% during the 2.5s hook, then swells back to 100%.</span>
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        {/* Social Accounts & Direct Publishing Section */}
+        <Section
+          icon={<Share2 className="size-4 text-primary" />}
+          title="Social Accounts & Direct Publishing"
+          description="Connect your YouTube, TikTok, and Instagram accounts to publish or schedule clips directly from this page"
+        >
+          <div className="space-y-4">
+            <div className="flex items-center justify-between pb-1 border-b">
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Platforms & Connections
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={loadSocialData}
+                disabled={loadingSocial}
+                className="h-7 text-xs gap-1.5"
+              >
+                <RefreshCw className={cn("size-3", loadingSocial && "animate-spin")} />
+                <span>Refresh Accounts</span>
+              </Button>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              {(["youtube", "tiktok", "instagram"] as const).map((prov) => {
+                const connection = socialConnections.find((c) => c.provider === prov);
+                const isConnected = connection && connection.status === "active";
+                const label = prov === "youtube" ? "YouTube" : prov === "tiktok" ? "TikTok" : "Instagram";
+
+                return (
+                  <div
+                    key={prov}
+                    className="flex flex-col justify-between rounded-xl border bg-card p-3.5 space-y-3 transition-colors hover:border-foreground/20"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <span className="flex size-8 items-center justify-center rounded-lg border bg-muted/30">
+                          <SocialProviderIcon provider={prov} className="size-4" />
+                        </span>
+                        <div>
+                          <p className="text-xs font-semibold text-foreground">{label}</p>
+                          <p className="text-[11px] text-muted-foreground truncate max-w-[110px]">
+                            {isConnected ? (connection.username || connection.display_name || "Connected") : "Not Connected"}
+                          </p>
+                        </div>
+                      </div>
+                      <Badge
+                        variant={isConnected ? "secondary" : "outline"}
+                        className={cn(
+                          "text-[10px] py-0 px-1.5 font-medium",
+                          isConnected && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                        )}
+                      >
+                        {isConnected ? "Active" : "Ready"}
+                      </Badge>
+                    </div>
+
+                    <div className="pt-1 flex items-center gap-1.5">
+                      {isConnected ? (
+                        <Button
+                          size="sm"
+                          className="w-full h-8 text-xs gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
+                          onClick={() => {
+                            setDirectPostProvider(prov);
+                            setDirectPostOpen(true);
+                          }}
+                        >
+                          <Send className="size-3" />
+                          <span>Direct Post</span>
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          asChild
+                          className="w-full h-8 text-xs gap-1"
+                        >
+                          <a href={`/api/social/connect/${prov}`}>
+                            <span>Connect</span>
+                            <ChevronRight className="size-3 text-muted-foreground" />
+                          </a>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-muted-foreground pt-1">
+              <span>Looking for full post history & analytics?</span>
+              <Link href="/settings/social" className="text-primary hover:underline font-medium flex items-center gap-1">
+                <span>Manage Social Credentials</span>
+                <ChevronRight className="size-3" />
+              </Link>
+            </div>
+          </div>
+        </Section>
+
+        {/* Multitasking & Worker Processing Engine */}
+        <Section
+          icon={<Cpu className="size-4 text-emerald-500" />}
+          title="Multitasking & Processing Engine"
+          description="High-throughput parallel workers and zero-waste background clipping pipeline"
+        >
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl border bg-card p-3.5 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                    <Layers className="size-3.5 text-primary" />
+                    <span>Parallel Worker Pool</span>
+                  </span>
+                  <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-mono text-[10px]">
+                    3 Workers Active ⚡
+                  </Badge>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Up to 24 concurrent ARQ job slots executing video processing, AI transcript analysis, and FFmpeg encoding.
+                </p>
+              </div>
+
+              <div className="rounded-xl border bg-card p-3.5 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                    <Zap className="size-3.5 text-amber-500" />
+                    <span>User Concurrency Limit</span>
+                  </span>
+                  <Badge variant="secondary" className="font-mono text-[10px]">
+                    4 Simultaneous Tasks
+                  </Badge>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Clip up to 4 videos at the same time without queuing delays. Extra tasks queue automatically.
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 flex items-start gap-3">
+              <span className="flex size-7 items-center justify-center rounded-lg bg-primary/20 text-primary shrink-0 mt-0.5">
+                <Sparkles className="size-3.5" />
+              </span>
+              <div className="space-y-1">
+                <p className="text-xs font-semibold text-foreground">High-Throughput Background Video Processing</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Videos process completely in the background across our distributed worker pool. Monitor live stage progress, accurate percentages, and finished clips directly in your Library and Task views.
+                </p>
+              </div>
+            </div>
+          </div>
+        </Section>
+
         {billingSummary?.monetization_enabled && (
           <Section id="plan" tour="settings-plan" icon={<CreditCard className="size-4" />} title={t("plan.title")} description={paymentNeedsUpdate || isPaidBillingPlan(billingSummary.plan) ? t("plan.paidDescription") : t("plan.freeDescription")}>
             <div className="space-y-4">
@@ -784,6 +1342,71 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+
+      {/* Direct Post Dialog */}
+      <Dialog open={directPostOpen} onOpenChange={setDirectPostOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Send className="size-4 text-primary" />
+              <span>Direct Post to {directPostProvider === "youtube" ? "YouTube Shorts" : directPostProvider === "tiktok" ? "TikTok" : "Instagram"}</span>
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Publish or schedule a clip directly to your connected account without leaving this page.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 pt-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="direct-post-title" className="text-xs">Post Title</Label>
+              <Input
+                id="direct-post-title"
+                placeholder="e.g. Insane Overtime Clutch Moment 🔥"
+                value={directPostTitle}
+                onChange={(e) => setDirectPostTitle(e.target.value)}
+                className="h-8 text-xs"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="direct-post-caption" className="text-xs">Caption & Description</Label>
+              <Textarea
+                id="direct-post-caption"
+                placeholder="Write an engaging caption with hashtags..."
+                value={directPostCaption}
+                onChange={(e) => setDirectPostCaption(e.target.value)}
+                className="text-xs min-h-[90px]"
+              />
+            </div>
+
+            <div className="rounded-lg bg-muted/40 p-2 text-[11px] text-muted-foreground flex items-center justify-between">
+              <span>Publishing Target: <strong>{directPostProvider.toUpperCase()}</strong></span>
+              <span className="text-emerald-600 dark:text-emerald-400 font-medium">⚡ Connected</span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDirectPostOpen(false)}
+              disabled={isPosting}
+              className="h-8 text-xs"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleDirectPost}
+              disabled={isPosting}
+              className="gap-1.5 h-8 text-xs bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              {isPosting ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+              <span>Publish Now</span>
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </main>
   );
 }

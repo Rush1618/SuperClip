@@ -238,10 +238,20 @@ async def generate_caption(request: Request, db: AsyncSession = Depends(get_db))
     """Draft a social caption without publishing or scheduling anything."""
     ctx = await _allowed_context(request, db)
     body = await _json_body(request)
-    for field in ("task_id", "clip_id", "provider"):
+    for field in ("task_id", "clip_id"):
         if not isinstance(body.get(field), str) or not body[field].strip():
             raise HTTPException(status_code=422, detail=f"{field} is required")
     try:
+        if body.get("all_platforms") or not body.get("provider"):
+            return await _service(request, db).get_all_clip_captions(
+                ctx.user_id,
+                task_id=body["task_id"],
+                clip_id=body["clip_id"],
+                team_id=ctx.team_id,
+                force_refresh=bool(body.get("force_refresh")),
+            )
+        if not isinstance(body.get("provider"), str) or not body["provider"].strip():
+            raise HTTPException(status_code=422, detail="provider is required")
         return await _service(request, db).generate_caption(
             ctx.user_id,
             task_id=body["task_id"],

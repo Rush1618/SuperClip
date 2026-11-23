@@ -16,8 +16,23 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 import logging
 import json
+import re
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_task_thumbnail(
+    source_url: Optional[str], cover_clip_id: Optional[str] = None, task_id: Optional[str] = None
+) -> Optional[str]:
+    """Derive thumbnail URL from cover clip or public video source."""
+    if cover_clip_id and task_id:
+        return f"/api/tasks/{task_id}/clips/{cover_clip_id}/thumbnail"
+    if not source_url:
+        return None
+    yt_m = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", source_url)
+    if yt_m and ("youtube.com" in source_url or "youtu.be" in source_url):
+        return f"https://img.youtube.com/vi/{yt_m.group(1)}/hqdefault.jpg"
+    return None
 
 
 class _KeepEditStyle:
@@ -414,7 +429,7 @@ class TaskRepository:
                 raise
             result = await db.execute(
                 text("""
-                    SELECT t.*, s.title as source_title, s.type as source_type
+                    SELECT t.*, s.title as source_title, s.type as source_type, s.url as source_url
                     FROM tasks t
                     LEFT JOIN sources s ON t.source_id = s.id
                     WHERE t.id = :task_id
@@ -432,6 +447,14 @@ class TaskRepository:
             "team_id": getattr(row, "team_id", None),
             "source_id": row.source_id,
             "source_title": row.source_title,
+            "video_title": row.source_title,
+            "title": row.source_title,
+            "source_url": getattr(row, "source_url", None),
+            "thumbnail_url": _extract_task_thumbnail(
+                getattr(row, "source_url", None),
+                getattr(row, "cover_clip_id", None) if hasattr(row, "cover_clip_id") else None,
+                row.id,
+            ),
             "source_type": row.source_type,
             "status": row.status,
             "progress": getattr(row, "progress", None),
@@ -766,8 +789,13 @@ class TaskRepository:
                     "created_by_name": getattr(row, "created_by_name", None),
                     "source_id": row.source_id,
                     "source_title": row.source_title,
+                    "video_title": row.source_title,
+                    "title": row.source_title,
+                    "thumbnail_url": _extract_task_thumbnail(row.source_url, row.cover_clip_id, row.id),
                     "source_type": row.source_type,
                     "status": row.status,
+                    "progress": getattr(row, "progress", None),
+                    "progress_message": getattr(row, "progress_message", None),
                     "processing_mode": getattr(row, "processing_mode", "fast"),
                     "completion_notification_sent_at": getattr(
                         row, "completion_notification_sent_at", None

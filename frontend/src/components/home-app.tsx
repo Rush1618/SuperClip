@@ -76,6 +76,17 @@ interface CaptionTemplate {
 
 const FRAMING_IDS = OUTPUT_FORMATS;
 
+const TARGET_PLATFORMS = [
+  { id: "all", label: "All Platforms", icon: "✨", desc: "TikTok, Reels, Shorts, LinkedIn, X" },
+  { id: "tiktok", label: "TikTok", icon: "🎵", desc: "9:16 Vertical, hook-focused & trending hashtags" },
+  { id: "youtube", label: "YouTube Shorts", icon: "▶️", desc: "9:16 Vertical, searchable titles & keywords" },
+  { id: "instagram", label: "Instagram Reels", icon: "📸", desc: "9:16 Vertical, aesthetic caption & clean tags" },
+  { id: "linkedin", label: "LinkedIn", icon: "💼", desc: "Professional, narrative insights & discussions" },
+  { id: "twitter", label: "X / Twitter", icon: "🐦", desc: "Concise punchy summary & conversation starter" },
+] as const;
+
+type TargetPlatform = (typeof TARGET_PLATFORMS)[number]["id"];
+
 const COLOR_SWATCHES = ["#FFFFFF", "#000000", "#FFD700", "#FF6B6B", "#4ECDC4", "#45B7D1"];
 
 type PartCount = "auto" | number;
@@ -208,6 +219,8 @@ export default function HomeApp() {
   const [workflowLengths, setWorkflowLengths] = useState<Partial<Record<LengthWorkflow, ClipLength>>>({});
   const [instructions, setInstructions] = useState("");
   const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const [targetPlatform, setTargetPlatform] = useState<TargetPlatform>("all");
+  const [platformPopoverOpen, setPlatformPopoverOpen] = useState(false);
   // The less-used settings stay folded away; null = closed unless something in them is already set.
   const [customizeOpen, setCustomizeOpen] = useState<boolean | null>(null);
   const [cleanupMoreOpen, setCleanupMoreOpen] = useState<boolean | null>(null);
@@ -362,6 +375,7 @@ export default function HomeApp() {
     setEditStyle(DEFAULT_EDIT_STYLE);
     setWorkflowLengths({});
     setAdvancedByWorkflow({});
+    setTargetPlatform("all");
   }
 
   function chooseClipLength(value: ClipLength) {
@@ -953,6 +967,7 @@ export default function HomeApp() {
         if (activeWorkflow === "topic") options.topic = normalizeTopic(topic);
         if (activeWorkflow === "series" && partCount !== "auto") options.part_count = partCount;
       }
+      if (targetPlatform && targetPlatform !== "all") options.target_platform = targetPlatform;
       if (advancedCount > 0) options.advanced = advancedChanges;
       if (Object.keys(options).length > 0) request.workflow_options = options;
       if (sentInstructions) request.instructions = sentInstructions;
@@ -1295,6 +1310,55 @@ export default function HomeApp() {
                   <MessageSquareText className="size-3.5" />
                 </Chip>
               )}
+
+              <Popover open={platformPopoverOpen} onOpenChange={setPlatformPopoverOpen}>
+                <PopoverTrigger asChild>
+                  <Chip
+                    disabled={controlsDisabled}
+                    active={targetPlatform !== "all" || platformPopoverOpen}
+                    aria-label="Target Platform"
+                    title="Choose target platform for video clipping & captioning"
+                    className="gap-1.5"
+                  >
+                    <span className="text-xs">{TARGET_PLATFORMS.find((p) => p.id === targetPlatform)?.icon ?? "✨"}</span>
+                    <span className="hidden sm:inline">{TARGET_PLATFORMS.find((p) => p.id === targetPlatform)?.label ?? "All Platforms"}</span>
+                    <ChevronDown className="size-3 opacity-60" />
+                  </Chip>
+                </PopoverTrigger>
+                <PopoverContent align="start" collisionPadding={12} className="w-[min(92vw,280px)] p-2 rounded-xl">
+                  <div className="space-y-1">
+                    <p className="px-2 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                      Target Platform
+                    </p>
+                    {TARGET_PLATFORMS.map((platform) => (
+                      <button
+                        key={platform.id}
+                        type="button"
+                        onClick={() => {
+                          setTargetPlatform(platform.id);
+                          if (["tiktok", "youtube", "instagram"].includes(platform.id) && outputFormat === "original") {
+                            setOutputFormat("vertical");
+                          }
+                          setPlatformPopoverOpen(false);
+                        }}
+                        className={cn(
+                          "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors hover:bg-muted",
+                          targetPlatform === platform.id && "bg-muted font-medium"
+                        )}
+                      >
+                        <span className="text-base shrink-0">{platform.icon}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <span className="font-medium text-xs text-foreground">{platform.label}</span>
+                            {targetPlatform === platform.id && <Check className="size-3.5 text-brand shrink-0" />}
+                          </div>
+                          <p className="text-[11px] text-muted-foreground leading-tight mt-0.5 line-clamp-1">{platform.desc}</p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
 
               <ComposerSettings
                 label={t("composerSettings.chip")}

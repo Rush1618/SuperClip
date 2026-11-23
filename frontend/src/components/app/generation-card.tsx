@@ -42,10 +42,22 @@ export function GenerationCard({ generation, selected, onToggle, selectionDisabl
         >
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/0 to-black/20" />
           {active && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-stone-950/60 text-white">
-              <Loader2 className="size-5 animate-spin" aria-hidden />
-              <span className="text-xs font-medium">{generation.status === "queued" ? t("card.queued") : workflow === "highlights" ? t("card.finding") : t(`card.findingByWorkflow.${workflow}`)}</span>
-              <div className="progress-sheen relative mt-1 h-0.5 w-24 overflow-hidden rounded-full bg-white/20" />
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-stone-950/75 p-3 text-center text-white backdrop-blur-[2px]">
+              <Loader2 className="size-5 animate-spin text-primary" aria-hidden />
+              {typeof generation.progress === "number" && generation.progress > 0 ? (
+                <span className="font-mono text-base font-bold tabular-nums text-white">
+                  {Math.round(generation.progress)}%
+                </span>
+              ) : null}
+              <span className="line-clamp-2 text-[11px] font-medium leading-tight text-white/90">
+                {generation.progress_message || (generation.status === "queued" ? t("card.queued") : workflow === "highlights" ? t("card.finding") : t(`card.findingByWorkflow.${workflow}`))}
+              </span>
+              <div className="relative mt-1 h-1.5 w-24 overflow-hidden rounded-full bg-white/20">
+                <div
+                  className="h-full bg-primary transition-all duration-500"
+                  style={{ width: `${Math.max(5, Math.min(100, generation.progress || (generation.status === "queued" ? 5 : 20)))}%` }}
+                />
+              </div>
             </div>
           )}
           {failed && (
