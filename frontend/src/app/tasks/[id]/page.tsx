@@ -1370,7 +1370,7 @@ export default function TaskPage() {
         )}
         {focusedClip && (
           <AutoUploadModule
-            taskId={params.id}
+            taskId={typeof params.id === "string" ? params.id : Array.isArray(params.id) ? params.id[0] : ""}
             clipId={focusedClip.id}
             onUploaded={loadSocialPosts}
             className="my-3"
