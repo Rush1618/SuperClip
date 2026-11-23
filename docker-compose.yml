@@ -28,6 +28,7 @@ services:
         - POSTHOG_PROJECT_ID=${POSTHOG_PROJECT_ID:-}
         - POSTHOG_RELEASE_VERSION=${POSTHOG_RELEASE_VERSION:-}
     container_name: supoclip-frontend
+    init: true
     ports:
       # Keep the legacy port for deployments whose proxy already uses 3001.
       # .env.example selects 3107 for new self-hosted installations.
@@ -137,6 +138,7 @@ services:
       args:
         BACKEND_CPU_ONLY: ${BACKEND_CPU_ONLY:-false}
     container_name: supoclip-backend
+    init: true
     # linux/amd64 by default, including on Apple Silicon (emulated). Set
     # BACKEND_PLATFORM=linux/arm64 with BACKEND_CPU_ONLY=true for a native
     # arm64 image. CUDA wheels are amd64-only.
@@ -373,6 +375,7 @@ services:
       args:
         BACKEND_CPU_ONLY: ${BACKEND_CPU_ONLY:-false}
     container_name: supoclip-worker
+    init: true
     # Same platform override as the backend service.
     platform: "${BACKEND_PLATFORM:-linux/amd64}"
     # Starts the video worker and, unless EMBED_CRON_WORKER=0, the cron worker.
@@ -620,6 +623,7 @@ services:
       args:
         BACKEND_CPU_ONLY: ${BACKEND_CPU_ONLY:-false}
     container_name: supoclip-ai-worker
+    init: true
     platform: "${BACKEND_PLATFORM:-linux/amd64}"
     command: [".venv/bin/arq", "src.workers.ai_worker.AIWorkerSettings"]
     volumes:

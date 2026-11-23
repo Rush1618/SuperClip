@@ -4,6 +4,14 @@ What changed in SupoClip for people using the product. Newest dates are first.
 
 Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
 
+## 2026-11-23
+
+- **New:** Autonomous multi-platform video publishing. Generated clips can now be automatically scheduled and published directly to connected YouTube Shorts, TikTok, and Instagram accounts in auto-clipping mode. ([#550](https://github.com/FujiwaraChoki/supoclip/pull/550))
+- **Improved:** Live stream radar now connects directly to live feeds with genuine chat velocity and emote spike detection via Twitch IRC, correctly distinguishing between ongoing live streams, VODs, and clips without substituting unrelated videos. ([#550](https://github.com/FujiwaraChoki/supoclip/pull/550))
+- **Improved:** Worldwide trending video discovery now integrates official YouTube Data API v3 and Twitch Helix API connectors with verified view metrics, calibrated virality scores based on views per hour and engagement, and transparent scoring explanations. ([#550](https://github.com/FujiwaraChoki/supoclip/pull/550))
+- **Improved:** Autonomous viral pattern learning memory is now persisted in PostgreSQL and scheduled on the ARQ cron maintenance worker. ([#550](https://github.com/FujiwaraChoki/supoclip/pull/550))
+- **Fixed:** AI model capability selection now uses a dedicated capability registry, enabling JSON schema output on supported models while preserving tool-output compatibility for local and cloud models. ([#550](https://github.com/FujiwaraChoki/supoclip/pull/550))
+
 ## 2026-11-21
 
 - **Improved:** The site footer now shows SupoClip's full operating company imprint, including its registered address and contact phone number. ([#547](https://github.com/FujiwaraChoki/supoclip/pull/547))
