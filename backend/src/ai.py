@@ -500,15 +500,111 @@ def _get_missing_llm_key_error(model_name: str, runtime_config: Config) -> Optio
     return None
 
 
+from dataclasses import dataclass
+
 # Anthropic models the installed SDK has no profile for. They support native
 # structured output; without it, output falls back to a tool call with the
 # SDK's 4096-token cap, which cuts long schemas such as the source outline short.
 _NATIVE_OUTPUT_ANTHROPIC_MODELS = frozenset({"claude-sonnet-5-5", "claude-haiku-5-5"})
 
 
-def _uses_native_output(model_name: str) -> bool:
+@dataclass(frozen=True)
+class ModelCapabilities:
+    """Capability descriptor for models and endpoints."""
+
+    native_json_schema: bool
+    tool_calling: bool
+    streaming: bool
+    max_output_tokens: Optional[int] = None
+    context_window: Optional[int] = None
+    local_inference: bool = False
+
+
+MODEL_CAPABILITIES: Dict[str, ModelCapabilities] = {
+    "openrouter": ModelCapabilities(
+        native_json_schema=True,
+        tool_calling=True,
+        streaming=True,
+        max_output_tokens=8192,
+        local_inference=False,
+    ),
+    "anthropic:claude-sonnet-5-5": ModelCapabilities(
+        native_json_schema=True,
+        tool_calling=True,
+        streaming=True,
+        max_output_tokens=8192,
+        local_inference=False,
+    ),
+    "anthropic:claude-haiku-5-5": ModelCapabilities(
+        native_json_schema=True,
+        tool_calling=True,
+        streaming=True,
+        max_output_tokens=8192,
+        local_inference=False,
+    ),
+    "anthropic_legacy": ModelCapabilities(
+        native_json_schema=False,
+        tool_calling=True,
+        streaming=True,
+        max_output_tokens=4096,
+        local_inference=False,
+    ),
+    "ollama_local": ModelCapabilities(
+        native_json_schema=True,
+        tool_calling=True,
+        streaming=True,
+        max_output_tokens=None,
+        local_inference=True,
+    ),
+    "google": ModelCapabilities(
+        native_json_schema=False,
+        tool_calling=True,
+        streaming=True,
+        max_output_tokens=8192,
+        local_inference=False,
+    ),
+    "openai": ModelCapabilities(
+        native_json_schema=True,
+        tool_calling=True,
+        streaming=True,
+        max_output_tokens=4096,
+        local_inference=False,
+    ),
+}
+
+
+def get_model_capabilities(model_name: str) -> ModelCapabilities:
+    """Retrieve capability profile for a model identifier."""
     provider, name = _split_llm_name(model_name)
-    return provider in ("openrouter", "ollama") or (
+    if provider == "openrouter":
+        return MODEL_CAPABILITIES["openrouter"]
+    if provider == "anthropic":
+        if name in _NATIVE_OUTPUT_ANTHROPIC_MODELS:
+            key = f"anthropic:{name}"
+            return MODEL_CAPABILITIES.get(key, MODEL_CAPABILITIES["anthropic:claude-sonnet-5-5"])
+        return MODEL_CAPABILITIES["anthropic_legacy"]
+    if provider == "ollama":
+        return MODEL_CAPABILITIES["ollama_local"]
+    if provider in {"google", "google-gla"}:
+        return MODEL_CAPABILITIES["google"]
+    if provider == "openai":
+        return MODEL_CAPABILITIES["openai"]
+    return ModelCapabilities(
+        native_json_schema=False,
+        tool_calling=True,
+        streaming=True,
+        local_inference=False,
+    )
+
+
+def _uses_native_output(model_name: str) -> bool:
+    """Whether the given model must use NativeOutput rather than tool calling.
+
+    Note: Ollama models support tool calling and should use tool output in tasks
+    like FX beat generation to respect their tested contracts and token limits.
+    """
+    provider, name = _split_llm_name(model_name)
+    return provider == "openrouter" or (
         provider == "anthropic" and name in _NATIVE_OUTPUT_ANTHROPIC_MODELS
     )
 
