@@ -75,19 +75,21 @@ def test_resolve_playable_stream_url():
 
 def test_analyze_stream_hype_moments_honesty():
     res = analyze_stream_hype_moments("https://www.twitch.tv/tarik")
-    assert res["is_simulated"] is True
-    assert res["pipeline_status"] == "demonstration_preview"
-    assert "Simulated demonstration" in res["pipeline_notice"]
+    assert res["is_simulated"] is False
     assert res["is_playable"] is False
     assert res["stream_url"] == "https://www.twitch.tv/tarik"
     assert res["playable_url"] is None
-    for moment in res["detected_moments"]:
-        assert moment["is_simulated"] is True
-        assert moment["stream_url"] == "https://www.twitch.tv/tarik"
+
+    # Playable VOD should be identified directly as ready for clipping without fake substitution
+    vod_res = analyze_stream_hype_moments("https://www.twitch.tv/videos/123456")
+    assert vod_res["is_playable"] is True
+    assert vod_res["status"] == "ready_for_clipping"
+    assert vod_res["playable_url"] == "https://www.twitch.tv/videos/123456"
 
 
 @pytest.mark.asyncio
-async def test_check_and_heal_transcript():
+async def test_check_and_heal_transcript(monkeypatch):
+    monkeypatch.setattr("src.services.live_stream_service._get_agent", lambda *args, **kwargs: None)
     res = await check_and_heal_transcript("tar rick is one v five on val or ant bro no shoot")
     assert "Tarik" in res["corrected_speech"]
     assert "1v5" in res["corrected_speech"]
@@ -102,7 +104,9 @@ def test_fetch_twitch_clips_never_returns_youtube():
     assert clips == []
 
 
-def test_fetch_all_trending_handles_none_virality_score():
+def test_fetch_all_trending_handles_none_virality_score(monkeypatch):
+    monkeypatch.setattr("src.services.trending_service.NICHE_CHANNEL_FEEDS", {})
+    monkeypatch.setattr("src.services.trending_service.get_youtube_api_key", lambda: None)
     videos = fetch_all_trending(platform="youtube", limit=5)
     assert isinstance(videos, list)
     # Ensure all items have required keys and sorting did not raise TypeError
@@ -110,3 +114,23 @@ def test_fetch_all_trending_handles_none_virality_score():
         assert "id" in v
         assert "title" in v
         assert "platform" in v
+
+
+@pytest.mark.asyncio
+async def test_viral_learning_memory_repository():
+    from src.repositories.viral_learning_repository import ViralLearningRepository
+
+    mem = await ViralLearningRepository.get_latest_memory()
+    assert "learned_hooks" in mem
+    assert "title_formulas" in mem
+    assert len(mem["learned_hooks"]) > 0
+
+    custom_mem = dict(mem)
+    custom_mem["learned_hooks"] = ["Test Hook 1", "Test Hook 2"]
+    custom_mem["total_cycles"] = 99
+    await ViralLearningRepository.save_memory(custom_mem)
+
+    updated = await ViralLearningRepository.get_latest_memory()
+    assert updated["total_cycles"] == 99
+    assert updated["learned_hooks"] == ["Test Hook 1", "Test Hook 2"]
+
