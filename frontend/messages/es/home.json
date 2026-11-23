@@ -293,6 +293,14 @@
         "label": "Título en el video",
         "hint": "Muestra el título durante los primeros segundos."
       },
+      "chunked_download": {
+        "label": "Descarga fragmentada",
+        "hint": "Descargar y procesar el video en fragmentos paralelos para mayor rapidez."
+      },
+      "auto_upload": {
+        "label": "Subida automática",
+        "hint": "Publicar clips automáticamente en las redes sociales conectadas."
+      },
       "junction_style": {
         "label": "Cortes entre secciones",
         "hint": "Cómo se unen las piezas de un clip."

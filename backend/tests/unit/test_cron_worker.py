@@ -44,6 +44,12 @@ def test_the_worker_process_embeds_cron_unless_asked_not_to():
     assert worker_settings(True) == [VIDEO_WORKER, CRON_WORKER]
 
 
+def test_worker_process_concurrency_override(monkeypatch):
+    monkeypatch.setenv("NUM_VIDEO_WORKERS", "3")
+    assert worker_settings(False) == [VIDEO_WORKER, VIDEO_WORKER, VIDEO_WORKER]
+    assert worker_settings(True) == [VIDEO_WORKER, VIDEO_WORKER, VIDEO_WORKER, CRON_WORKER]
+
+
 @pytest.mark.asyncio
 async def test_a_pending_cron_id_is_not_enqueued_twice():
     redis = await create_pool(RedisSettings(

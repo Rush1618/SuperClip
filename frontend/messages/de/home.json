@@ -293,6 +293,14 @@
         "label": "Titel im Video",
         "hint": "Blendet den Titel in den ersten Sekunden ein."
       },
+      "chunked_download": {
+        "label": "Segmentierter Download",
+        "hint": "Video in parallelen Segmenten herunterladen und verarbeiten."
+      },
+      "auto_upload": {
+        "label": "Automatischer Upload",
+        "hint": "Fertige Clips automatisch auf verknüpften Social-Media-Plattformen veröffentlichen."
+      },
       "junction_style": {
         "label": "Schnitte zwischen Abschnitten",
         "hint": "Wie die Teile eines Clips verbunden werden."

@@ -293,6 +293,14 @@
         "label": "Title on the video",
         "hint": "Burn the title in for the first few seconds."
       },
+      "chunked_download": {
+        "label": "Chunked download",
+        "hint": "Stream and process video in parallel chunks for faster delivery."
+      },
+      "auto_upload": {
+        "label": "Auto upload",
+        "hint": "Automatically distribute rendered clips to connected social platforms."
+      },
       "junction_style": {
         "label": "Cuts between sections",
         "hint": "How the pieces of a clip join."

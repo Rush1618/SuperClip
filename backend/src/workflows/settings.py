@@ -51,12 +51,10 @@ class Setting:
 
 _HOOK_TITLE = Setting("hook_title", "bool", True)
 _CHUNKED_DOWNLOAD = Setting("chunked_download", "bool", True)
-_CHUNK_DURATION = Setting("chunk_duration", "int", 180, minimum=60, maximum=600)
-_AI_VOICE_HOOK = Setting("ai_voice_hook", "bool", True)
-_AI_VOICE_STYLE = Setting("ai_voice_style", "enum", "viral_guy", choices=("viral_guy", "viral_girl", "deep_narrator", "documentary"))
 # auto: each workflow's own junctions (recap 0.12 s fade, trailer hard cuts).
 _JUNCTIONS = Setting("junction_style", "enum", "auto", choices=("auto", "soft", "hard"))
-_SHARED = (_HOOK_TITLE, _CHUNKED_DOWNLOAD, _CHUNK_DURATION, _AI_VOICE_HOOK, _AI_VOICE_STYLE, _JUNCTIONS)
+_AUTO_UPLOAD = Setting("auto_upload", "bool", False)
+_SHARED = (_HOOK_TITLE, _CHUNKED_DOWNLOAD, _JUNCTIONS, _AUTO_UPLOAD)
 
 SETTINGS: dict[str, tuple[Setting, ...]] = {
     "highlights": (Setting("max_clips", "int", None, minimum=1, maximum=10), *_SHARED),

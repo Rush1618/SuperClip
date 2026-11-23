@@ -2118,7 +2118,7 @@ class VideoService:
                             skip_proxy=True, progress_callback=progress_callback,
                         )
                         video_path = preserve_geo_restriction(video_path, exc if video_path is None else None)
-                elif video_id and not cached_full and (source_duration is None or float(source_duration) >= BIG_VIDEO_THRESHOLD_SECONDS):
+                elif proxy_configured(runtime_config) and video_id and not cached_full:
                     def _resolve_analysis():
                         def _download_full():
                             return resolve_full_youtube_download(

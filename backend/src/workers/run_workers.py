@@ -27,11 +27,11 @@ def embed_cron_worker(value: str | None = None) -> bool:
 
 
 def num_video_workers() -> int:
-    """Number of parallel video worker processes to run."""
+    """Number of parallel video worker processes to run (default 1 for safe resource footprint)."""
     try:
-        return max(1, int(os.getenv("NUM_VIDEO_WORKERS", "3")))
+        return max(1, int(os.getenv("NUM_VIDEO_WORKERS", "1")))
     except Exception:
-        return 3
+        return 1
 
 
 def worker_settings(embed_cron: bool | None = None) -> list[str]:

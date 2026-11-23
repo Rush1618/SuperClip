@@ -293,6 +293,14 @@
         "label": "Judul di video",
         "hint": "Tampilkan judul selama beberapa detik pertama."
       },
+      "chunked_download": {
+        "label": "Unduhan terpotong",
+        "hint": "Unduh dan proses video dalam bagian paralel untuk pemrosesan lebih cepat."
+      },
+      "auto_upload": {
+        "label": "Unggah otomatis",
+        "hint": "Otomatis mengunggah klip yang dirender ke platform media sosial yang terhubung."
+      },
       "junction_style": {
         "label": "Potongan antarbagian",
         "hint": "Cara potongan-potongan klip disambung."

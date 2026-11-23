@@ -20,6 +20,7 @@ def apify_setup(monkeypatch, tmp_path):
         temp_dir=str(tmp_path),
         max_video_duration=10800,
         youtube_download_provider="apify",
+        apify_api_token="test-token",
     )
     monkeypatch.setattr(module, "get_config", lambda: config)
     monkeypatch.setattr(youtube_utils, "get_config", lambda: config)
