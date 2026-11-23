@@ -204,10 +204,10 @@ class Config:
         # instead of taking another slot. Raise it (for example to 2) to let
         # an account render two videos at the same time.
         self.video_job_user_concurrency = max(
-            1, self._get_int_env("VIDEO_JOB_USER_CONCURRENCY", 4)
+            1, self._get_int_env("VIDEO_JOB_USER_CONCURRENCY", 1)
         )
         self.video_job_team_concurrency = max(
-            1, self._get_int_env("VIDEO_JOB_TEAM_CONCURRENCY", 6)
+            1, self._get_int_env("VIDEO_JOB_TEAM_CONCURRENCY", 3)
         )
         self.video_job_defer_seconds = min(
             300, max(5, self._get_int_env("VIDEO_JOB_DEFER_SECONDS", 20))

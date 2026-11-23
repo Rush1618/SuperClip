@@ -51,18 +51,6 @@ COMMON_PHONETIC_FIXES = {
     r"\baim\s*bot\s*in\b": ("aimbotting", "Gaming Slang Standardization"),
 }
 
-# Reliable working VOD/video highlights for channels when clipping live streams
-CHANNEL_FALLBACK_VIDEOS: Dict[str, str] = {
-    "tarik": "https://www.youtube.com/watch?v=bHIhgxav9LY",
-    "kaicenat": "https://www.youtube.com/watch?v=dnbLdUyozKM",
-    "jynxzi": "https://www.youtube.com/watch?v=j6rVn529Hi4",
-    "caseoh": "https://www.youtube.com/watch?v=YM1f69J8MYM",
-    "shroud": "https://www.youtube.com/watch?v=ljEukoe7IyY",
-    "xqc": "https://www.youtube.com/watch?v=bHIhgxav9LY",
-}
-
-DEFAULT_FALLBACK_VIDEO = "https://www.youtube.com/watch?v=bHIhgxav9LY"
-
 
 def detect_platform_from_url(url: str) -> str:
     """Identify if URL is YouTube or Twitch."""
@@ -72,26 +60,48 @@ def detect_platform_from_url(url: str) -> str:
     return "youtube"
 
 
+def inspect_stream_source_kind(url: str) -> Dict[str, Any]:
+    """
+    Distinguish between a genuinely playable VOD, a clip, a standard video,
+    and a raw live channel broadcast. Never substitute an unrelated video.
+    """
+    clean = url.strip()
+    platform = detect_platform_from_url(clean)
+
+    if platform == "twitch":
+        if "/videos/" in clean:
+            return {"platform": "twitch", "kind": "vod", "is_playable": True, "clean_url": clean}
+        if "/clip/" in clean or "clips.twitch.tv" in clean:
+            return {"platform": "twitch", "kind": "clip", "is_playable": True, "clean_url": clean}
+        return {"platform": "twitch", "kind": "live_channel", "is_playable": False, "clean_url": clean}
+
+    # YouTube
+    if "/watch?v=" in clean or "youtu.be/" in clean or "/shorts/" in clean:
+        return {"platform": "youtube", "kind": "video", "is_playable": True, "clean_url": clean}
+    if "/live" in clean:
+        return {"platform": "youtube", "kind": "live_channel", "is_playable": False, "clean_url": clean}
+
+    return {"platform": platform, "kind": "unknown", "is_playable": False, "clean_url": clean}
+
+
 def resolve_playable_stream_url(raw_url: str, channel: str = "") -> str:
     """
-    Ensure the URL is directly downloadable by yt-dlp.
-    If a raw live channel URL is passed (which yt-dlp rejects with
-    'Live streams aren't supported'), map it to a working playable highlight VOD.
+    Ensure the URL is directly downloadable as a video, VOD, or clip.
+    If a raw in-progress live channel URL is passed, raises ValueError rather
+    than silently substituting an unrelated video.
     """
-    clean = raw_url.strip()
-    c_lower = channel.lower().strip()
-    
-    # Check if it's a Twitch raw channel URL
-    if "twitch.tv" in clean and not ("/videos/" in clean or "/clip/" in clean or "clips.twitch.tv" in clean):
-        match = re.search(r"twitch\.tv/([a-zA-Z0-9_]+)", clean)
-        ch = match.group(1).lower() if match else c_lower
-        return CHANNEL_FALLBACK_VIDEOS.get(ch, DEFAULT_FALLBACK_VIDEO)
-    
-    # Check if it's a YouTube live channel URL (e.g. /@channel/live)
-    if "youtube.com" in clean and "/live" in clean:
-        return DEFAULT_FALLBACK_VIDEO
+    inspection = inspect_stream_source_kind(raw_url)
+    clean = inspection["clean_url"]
 
-    return clean
+    if inspection["is_playable"]:
+        return clean
+
+    # Never silently substitute an unrelated video. Fail with clear error message.
+    raise ValueError(
+        f"'{clean}' is an in-progress live broadcast. Live streams currently broadcasting "
+        "cannot be directly clipped until the stream finishes or a VOD / clip URL is provided. "
+        "A substitute video will never be silently used."
+    )
 
 
 async def check_and_heal_transcript(
@@ -180,14 +190,14 @@ async def check_and_heal_transcript(
 
                 if ai_words and isinstance(ai_words, list) and len(ai_words) > 0:
                     error_count = len(corrections_applied)
-                    acc_calc = max(94.0, min(99.8, 100.0 - (error_count * 1.8)))
                     return {
                         "raw_speech": raw_clean,
                         "corrected_speech": healed_text,
                         "important_words": [str(w).upper() for w in ai_words[:6]],
                         "corrections_applied": corrections_applied,
-                        "accuracy_score": f"{acc_calc:.1f}% (Self-Healed)",
-                        "status": "Verified & Healed by AI",
+                        "accuracy_score": f"Self-Healed ({error_count} fixes)" if error_count > 0 else "Verified Clean",
+                        "status": "Healed by AI" if error_count > 0 else "Clean",
+                        "confidence_note": "Contextual LLM & phonetic dictionary corrections (heuristic)",
                         "error_count": error_count,
                     }
         except Exception as e:
@@ -203,14 +213,14 @@ async def check_and_heal_transcript(
         high_impact = [c.upper() for c in candidates if len(c) >= 5][:3]
 
     error_count = len(corrections_applied)
-    acc_calc = max(94.0, min(99.8, 100.0 - (error_count * 1.8)))
     return {
         "raw_speech": raw_clean,
         "corrected_speech": healed_text,
         "important_words": high_impact[:5] or ["CLUTCH", "MOMENT"],
         "corrections_applied": corrections_applied,
-        "accuracy_score": f"{acc_calc:.1f}% (Self-Healed)",
-        "status": "Verified & Healed",
+        "accuracy_score": f"Self-Healed ({error_count} fixes)" if error_count > 0 else "Clean",
+        "status": "Healed by Rules" if error_count > 0 else "Clean",
+        "confidence_note": "Phonetic dictionary corrections (heuristic)",
         "error_count": error_count,
     }
 
@@ -236,7 +246,10 @@ def analyze_stream_hype_moments(
         match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})", clean_url)
         channel = "Top Creator"
 
-    playable_url = resolve_playable_stream_url(clean_url, channel=channel)
+    source_info = inspect_stream_source_kind(clean_url)
+    is_playable = source_info["is_playable"]
+    source_kind = source_info["kind"]
+    playable_url = clean_url if is_playable else None
 
     current_time_sec = int(time.time()) % 3600 + 300
     peak1_start = max(0, current_time_sec - 120)
@@ -339,7 +352,7 @@ def analyze_stream_hype_moments(
             "id": "moment-peak-1",
             "title": m1_title,
             "hype_score": 98,
-            "chat_velocity": "3,420 msgs/min (+540% Spike)",
+            "chat_velocity": "3,420 msgs/min (Simulated Peak)",
             "sentiment": "Extreme Excitement / Shock",
             "top_triggers": ["W", "NO WAY", "OMG", "CLIP IT"],
             "start_seconds": peak1_start,
@@ -348,16 +361,18 @@ def analyze_stream_hype_moments(
             "timestamp_label": f"{format_ts(peak1_start)} – {format_ts(peak1_end)}",
             "platform": platform,
             "channel": channel,
-            "stream_url": playable_url,
-            "reason": "Chat velocity exceeded 5x baseline with unanimous excitement keywords.",
+            "stream_url": clean_url,
+            "is_playable": is_playable,
+            "is_simulated": True,
+            "reason": "Simulated chat velocity spike with excitement trigger clustering.",
             "spoken_transcript": m1_corrected,
             "important_words": m1_words,
             "transcription_error_check": {
                 "raw_speech": m1_raw,
                 "corrected_speech": m1_corrected,
                 "corrections_applied": m1_errors,
-                "accuracy_score": "99.4% (Self-Healed)",
-                "status": "Self-Healed & Verified",
+                "accuracy_score": f"Self-Healed ({len(m1_errors)} fixes)",
+                "status": "Demonstration Sample",
                 "error_count": len(m1_errors),
             },
         },
@@ -365,7 +380,7 @@ def analyze_stream_hype_moments(
             "id": "moment-peak-2",
             "title": m2_title,
             "hype_score": 94,
-            "chat_velocity": "2,850 msgs/min (+380% Spike)",
+            "chat_velocity": "2,850 msgs/min (Simulated Spike)",
             "sentiment": "Uncontrollable Laughter",
             "top_triggers": ["KEKW", "LMAO", "LOL", "BRO WHAT"],
             "start_seconds": peak2_start,
@@ -374,16 +389,18 @@ def analyze_stream_hype_moments(
             "timestamp_label": f"{format_ts(peak2_start)} – {format_ts(peak2_end)}",
             "platform": platform,
             "channel": channel,
-            "stream_url": playable_url,
-            "reason": "Sudden volume of laughing emotes and high-energy streamer laughter.",
+            "stream_url": clean_url,
+            "is_playable": is_playable,
+            "is_simulated": True,
+            "reason": "Simulated burst of laughing emotes and high-energy reactions.",
             "spoken_transcript": m2_corrected,
             "important_words": m2_words,
             "transcription_error_check": {
                 "raw_speech": m2_raw,
                 "corrected_speech": m2_corrected,
                 "corrections_applied": m2_errors,
-                "accuracy_score": "98.9% (Self-Healed)",
-                "status": "Self-Healed & Verified",
+                "accuracy_score": f"Self-Healed ({len(m2_errors)} fixes)",
+                "status": "Demonstration Sample",
                 "error_count": len(m2_errors),
             },
         },
@@ -391,7 +408,7 @@ def analyze_stream_hype_moments(
             "id": "moment-peak-3",
             "title": m3_title,
             "hype_score": 91,
-            "chat_velocity": "2,190 msgs/min (+290% Spike)",
+            "chat_velocity": "2,190 msgs/min (Simulated Spike)",
             "sentiment": "High Suspense & Curiosity",
             "top_triggers": ["POG", "SHEESH", "HOLY", "LETS GO"],
             "start_seconds": peak3_start,
@@ -400,16 +417,18 @@ def analyze_stream_hype_moments(
             "timestamp_label": f"{format_ts(peak3_start)} – {format_ts(peak3_end)}",
             "platform": platform,
             "channel": channel,
-            "stream_url": playable_url,
-            "reason": "Rapid viewer retention ramp with questions and shock triggers.",
+            "stream_url": clean_url,
+            "is_playable": is_playable,
+            "is_simulated": True,
+            "reason": "Simulated viewer retention ramp with suspense and shock triggers.",
             "spoken_transcript": m3_corrected,
             "important_words": m3_words,
             "transcription_error_check": {
                 "raw_speech": m3_raw,
                 "corrected_speech": m3_corrected,
                 "corrections_applied": m3_errors,
-                "accuracy_score": "99.1% (Self-Healed)",
-                "status": "Self-Healed & Verified",
+                "accuracy_score": f"Self-Healed ({len(m3_errors)} fixes)",
+                "status": "Demonstration Sample",
                 "error_count": len(m3_errors),
             },
         },
@@ -429,13 +448,21 @@ def analyze_stream_hype_moments(
         logger.warning("Could not update hype learning memory: %s", e)
 
     return {
-        "status": "active_monitoring",
+        "status": "demonstration_preview",
+        "is_simulated": True,
+        "pipeline_status": "demonstration_preview",
+        "pipeline_notice": (
+            "Simulated demonstration: Production real-time live monitoring requires "
+            "Twitch IRC or YouTube Live Chat connector for rolling event buffers."
+        ),
+        "source_kind": source_kind,
+        "is_playable": is_playable,
         "platform": platform,
         "channel": channel,
         "stream_url": clean_url,
         "playable_url": playable_url,
-        "current_viewer_activity": "High (+410% above average)",
-        "active_chat_velocity": "2,820 msgs/min",
-        "hype_index": "96/100 (Peak Viral Window)",
+        "current_viewer_activity": "Simulated Peak Activity",
+        "active_chat_velocity": "2,820 msgs/min (Simulated)",
+        "hype_index": "96/100 (Simulated Peak)",
         "detected_moments": moments,
     }

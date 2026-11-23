@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -185,11 +186,23 @@ DEFAULT_VIRAL_MEMORY = {
 }
 
 
+def _get_learning_memory_path() -> Path:
+    """Return persistent path for learned viral pattern memory."""
+    try:
+        from ..config import get_config
+        cfg = get_config()
+        base = Path(cfg.temp_dir).resolve().parent
+        return base / "viral_learning_memory.json"
+    except Exception:
+        return Path("/app/uploads/viral_learning_memory.json")
+
+
 def get_learning_memory() -> Dict[str, Any]:
     """Retrieve the persistent viral learning memory."""
-    if LEARNING_MEMORY_FILE.exists():
+    path = _get_learning_memory_path()
+    if path.exists():
         try:
-            with open(LEARNING_MEMORY_FILE, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict) and "learned_hooks" in data:
                     return data
@@ -199,10 +212,14 @@ def get_learning_memory() -> Dict[str, Any]:
 
 
 def save_learning_memory(memory: Dict[str, Any]) -> None:
-    """Save updated viral patterns to persistent disk."""
+    """Save updated viral patterns atomically to persistent disk."""
+    path = _get_learning_memory_path()
     try:
-        with open(LEARNING_MEMORY_FILE, "w", encoding="utf-8") as f:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(memory, f, indent=2, ensure_ascii=False)
+        tmp_path.replace(path)
     except Exception as e:
         logger.warning("Could not save viral learning memory: %s", e)
 
@@ -239,38 +256,6 @@ def get_learned_virality_prompt_snippet() -> str:
     return "\n".join(lines)
 
 
-def get_learned_virality_prompt_snippet() -> str:
-    """Retrieve learned viral patterns to enhance AI candidate reranking."""
-    mem = get_learning_memory()
-    hooks = mem.get("learned_hooks", [])[:3]
-    formulas = mem.get("title_formulas", [])[:3]
-    rules = mem.get("virality_boost_rules", "")
-    lines = ["CURRENT VIRAL PATTERNS TO PRIORITIZE IN RERANKING:"]
-    if hooks:
-        lines.append("- High-retention hook types: " + " | ".join(hooks))
-    if formulas:
-        lines.append("- Winning title formulas: " + " | ".join(formulas))
-    if rules:
-        lines.append(f"- Editorial guidance: {rules}")
-    return "\n".join(lines)
-
-
-def get_learned_caption_prompt_snippet() -> str:
-    """Retrieve learned viral hook patterns to enhance social media caption generation."""
-    mem = get_learning_memory()
-    hooks = mem.get("learned_hooks", [])[:3]
-    tags = mem.get("trending_hashtags", [])[:6]
-    rules = mem.get("virality_boost_rules", "")
-    lines = ["VIRAL RADAR LEARNED PATTERNS:"]
-    if hooks:
-        lines.append("- High-converting hook formulas: " + " | ".join(hooks))
-    if tags:
-        lines.append("- Recommended trending hashtags: " + " ".join(tags))
-    if rules:
-        lines.append(f"- Retention trigger rule: {rules}")
-    return "\n".join(lines)
-
-
 def _get_agent(system_prompt: str = "You are an expert social media analyst.") -> Optional[Any]:
     """Build local Ollama / transcript agent for AI processing."""
     try:
@@ -292,30 +277,59 @@ def _get_agent(system_prompt: str = "You are an expert social media analyst.") -
         return None
 
 
+def parse_iso_duration(dur: str) -> str:
+    """Convert ISO 8601 duration (e.g. PT1H14M20S, PT15M33S, PT45S) to human MM:SS or HH:MM:SS."""
+    if not dur or not dur.startswith("PT"):
+        return dur or "Unknown"
+    match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", dur)
+    if not match:
+        return dur.replace("PT", "")
+    hours, minutes, seconds = match.groups()
+    h = int(hours) if hours else 0
+    m = int(minutes) if minutes else 0
+    s = int(seconds) if seconds else 0
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
 def is_within_24_hours(published_text: str) -> bool:
     """Check if video/clip was published in the recent 24 hours.
 
-    Handles both relative labels ("3h ago", "2 days ago") and ISO-8601 dates.
+    Safely rejects multi-day offsets (e.g. '36h ago', '1d ago', '2 days ago')
+    and defaults to False on unparseable dates.
     """
     if not published_text:
-        return True
+        return False
     p = published_text.lower().strip()
 
-    # Try ISO-8601 date first (from RSS feeds)
+    # Try ISO-8601 date first (from RSS feeds and YouTube Data API)
     if "t" in p and ("z" in p or "+" in p or "-" in p[10:]):
         try:
             dt = datetime.fromisoformat(p.replace("Z", "+00:00"))
             diff_hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
-            return diff_hours <= 24
+            return 0 <= diff_hours <= 24.0
         except (ValueError, TypeError):
             pass
 
-    # Relative label matching ("Xh ago", "X hours ago", "Today", "Recent")
-    if any(w in p for w in ["today", "recent", "just now", "moments ago"]):
+    # Check hours: "3h ago", "12 hours ago", "36h ago"
+    m_hr = re.search(r"(\d+)\s*(?:h|hr|hours?)\s*ago", p)
+    if m_hr:
+        hrs = int(m_hr.group(1))
+        return hrs <= 24
+
+    # Check minutes: "45m ago", "10 minutes ago"
+    if re.search(r"\d+\s*(?:m|min|minutes?)\s*ago", p):
         return True
-    if any(unit in p for unit in ["2 day", "3 day", "4 day", "5 day", "6 day", "7 day", "days", "week", "month", "year"]):
+
+    # Check days/weeks/months: "1d ago", "2 days ago", "1 week ago" -> False
+    if re.search(r"\d+\s*(?:d|day|days?|week|weeks?|month|months?|year|years?)\s*ago", p):
         return False
-    return True
+
+    if any(w in p for w in ["just now", "moments ago", "few seconds ago", "recent"]):
+        return True
+
+    return False
 
 
 def get_youtube_api_key() -> Optional[str]:
@@ -341,7 +355,7 @@ def fetch_from_youtube_data_api(
     niche: str = "all",
     limit: int = 25
 ) -> List[Dict[str, Any]]:
-    """Fetch live trending videos directly from official YouTube Data API v3."""
+    """Fetch live trending videos directly from official YouTube Data API v3 with genuine metrics."""
     reg = region.upper().strip() if region else "US"
     reg_code = "US" if reg == "GLOBAL" else reg
     params: Dict[str, str] = {
@@ -371,6 +385,8 @@ def fetch_from_youtube_data_api(
     reg_name, reg_flag = REGIONS.get(reg, ("Worldwide", "🌍"))
     region_label = f"{reg_name} {reg_flag}"
 
+    now_utc = datetime.now(timezone.utc)
+
     for it in items:
         vid = it.get("id")
         snippet = it.get("snippet", {})
@@ -380,6 +396,9 @@ def fetch_from_youtube_data_api(
             continue
 
         raw_views = int(stats.get("viewCount", 0)) if stats.get("viewCount") else 0
+        raw_likes = int(stats.get("likeCount", 0)) if stats.get("likeCount") else 0
+        raw_comments = int(stats.get("commentCount", 0)) if stats.get("commentCount") else 0
+
         if raw_views >= 1_000_000:
             views_str = f"{raw_views / 1_000_000:.1f}M views"
         elif raw_views >= 1_000:
@@ -387,21 +406,36 @@ def fetch_from_youtube_data_api(
         elif raw_views > 0:
             views_str = f"{raw_views} views"
         else:
-            views_str = "Trending"
+            views_str = "Not available"
 
-        dur_iso = content.get("duration", "")
-        # Clean ISO duration PT14M20S -> 14:20
-        dur_str = dur_iso.replace("PT", "").replace("H", ":").replace("M", ":").replace("S", "")
+        dur_str = parse_iso_duration(content.get("duration", ""))
 
         pub_at = snippet.get("publishedAt", "")
         published_label = "Recent"
+        hours_since_pub = 24.0
         if pub_at:
             try:
                 dt = datetime.fromisoformat(pub_at.replace("Z", "+00:00"))
-                hrs = max(1, int((datetime.now(timezone.utc) - dt).total_seconds() // 3600))
+                diff_sec = (now_utc - dt).total_seconds()
+                hours_since_pub = max(0.5, diff_sec / 3600.0)
+                hrs = max(1, int(diff_sec // 3600))
                 published_label = f"{hrs}h ago" if hrs < 24 else f"{hrs // 24}d ago"
             except Exception:
                 published_label = "Recent"
+
+        # Calculate calibrated virality score & growth metrics from actual verified stats
+        if raw_views > 0:
+            views_per_hour = round(raw_views / hours_since_pub)
+            engagement_rate = round((raw_likes + raw_comments) / max(1, raw_views), 4)
+            velocity_pts = min(35, max(0, math.log10(max(1, views_per_hour)) * 7.5))
+            engagement_pts = min(20, max(0, engagement_rate * 350))
+            virality_score = min(99, max(50, round(45 + velocity_pts + engagement_pts)))
+            score_explanation = f"Calculated from {views_per_hour:,} views/hr and {engagement_rate * 100:.1f}% engagement"
+            verified_metrics = True
+        else:
+            virality_score = None
+            score_explanation = "Metrics not available from API"
+            verified_metrics = False
 
         videos.append({
             "id": vid,
@@ -411,12 +445,15 @@ def fetch_from_youtube_data_api(
             "channel": snippet.get("channelTitle", ""),
             "views": views_str,
             "published": published_label,
-            "duration": dur_str or "12:00",
+            "duration": dur_str,
             "thumbnail": f"https://img.youtube.com/vi/{vid}/hqdefault.jpg",
             "url": f"https://www.youtube.com/watch?v={vid}",
-            "virality_score": min(99, max(88, 99 - len(videos))),
+            "virality_score": virality_score,
+            "score_explanation": score_explanation,
+            "verified_metrics": verified_metrics,
             "region": region_label,
             "niche": niche,
+            "observed_at": now_utc.isoformat(),
         })
     return videos
 
@@ -464,12 +501,15 @@ def fetch_channel_rss_videos(channel_id: str, channel_name: str, niche: str, reg
                     "channel": channel_name,
                     "views": "New",
                     "published": published_label,
-                    "duration": "14:20",
+                    "duration": "Unknown",
                     "thumbnail": f"https://img.youtube.com/vi/{vid}/hqdefault.jpg",
                     "url": f"https://www.youtube.com/watch?v={vid}",
-                    "virality_score": min(99, 93 + (len(videos) % 6)),
+                    "virality_score": None,
+                    "score_explanation": "RSS creator broadcast (view counts unavailable from feed)",
+                    "verified_metrics": False,
                     "region": region_str,
                     "niche": niche,
+                    "observed_at": now.isoformat(),
                 })
     except Exception as exc:
         logger.debug("RSS feed fetch failed for %s (%s): %s", channel_name, channel_id, exc)
@@ -563,9 +603,12 @@ def fetch_trending_videos(
                 "duration": duration,
                 "thumbnail": f"https://img.youtube.com/vi/{vid}/hqdefault.jpg",
                 "url": f"https://www.youtube.com/watch?v={vid}",
-                "virality_score": score,
+                "virality_score": None,
+                "score_explanation": "Curated reference video (live metrics unavailable without YouTube Data API key)",
+                "verified_metrics": False,
                 "region": region_str,
                 "niche": pkey,
+                "observed_at": datetime.now(timezone.utc).isoformat(),
             })
             if len(videos) >= limit:
                 break
@@ -580,45 +623,108 @@ def fetch_twitch_trending_clips(
     timeframe: str = "24h",
     limit: int = 20
 ) -> List[Dict[str, Any]]:
-    """Fetch top trending gaming clips sourced from YouTube creator highlights.
+    """Fetch genuine Twitch trending clips via Twitch Helix API when configured.
 
-    These are YouTube-hosted clips from gaming/streaming creators. They are
-    labelled as platform=youtube to stay honest about their actual source.
+    Returns genuine Twitch clips with verified metrics, or an empty list if
+    Twitch API credentials (TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET) are not configured.
+    Never returns YouTube videos pretending to be Twitch clips.
     """
-    clips: List[Dict[str, Any]] = []
+    client_id = os.getenv("TWITCH_CLIENT_ID", "").strip()
+    client_secret = os.getenv("TWITCH_CLIENT_SECRET", "").strip()
 
-    # Verified real YouTube clips from gaming/streaming creators
-    verified_stream_clips = [
-        ("j6rVn529Hi4", "Wardens of Avalon - Exploration and Combat Gameplay", "IGN", "340K views", "2 hours ago", "08:15", 98, "gaming"),
-        ("ljEukoe7IyY", "Astrider - Official Demo Launch Trailer", "IGN", "280K views", "4 hours ago", "03:40", 96, "gaming"),
-        ("YM1f69J8MYM", "GTA 6 on PS5 Pro vs Xbox Series S", "Linus Tech Tips", "1.4M views", "6 hours ago", "18:20", 97, "gaming"),
-        ("bHIhgxav9LY", "Grand Theft Auto VI Trailer 1 - Vice City Reveal", "Rockstar Games", "185M views", "8 hours ago", "01:31", 99, "gaming"),
-    ]
+    if not (client_id and client_secret):
+        logger.debug("Twitch credentials not configured (TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET); skipping Twitch clips discovery")
+        return []
 
-    for vid, title, channel, views, published, duration, score, n in verified_stream_clips:
-        if niche != "all" and niche != n and niche != "gaming":
-            continue
-        if timeframe == "24h" and not is_within_24_hours(published):
-            continue
-        clips.append({
-            "id": vid,
-            "platform": "youtube",
-            "platform_icon": "▶️",
-            "title": title,
-            "channel": channel,
-            "views": views,
-            "published": published,
-            "duration": duration,
-            "thumbnail": f"https://img.youtube.com/vi/{vid}/hqdefault.jpg",
-            "url": f"https://www.youtube.com/watch?v={vid}",
-            "virality_score": score,
-            "region": "Gaming ▶️",
-            "niche": n,
-        })
-        if len(clips) >= limit:
-            break
+    try:
+        import requests
+        # Get App Access Token
+        token_resp = requests.post(
+            "https://id.twitch.tv/oauth2/token",
+            params={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "grant_type": "client_credentials",
+            },
+            timeout=5.0,
+        )
+        if token_resp.status_code != 200:
+            logger.warning("Twitch OAuth token request failed: %s", token_resp.text)
+            return []
+        token_data = token_resp.json()
+        access_token = token_data.get("access_token")
+        if not access_token:
+            return []
 
-    return clips[:limit]
+        # Map niche to Twitch Game IDs
+        twitch_game_map = {
+            "gaming": "32982",  # GTA V
+            "tech": "509658",    # Just Chatting / Tech
+            "all": "509658",
+        }
+        game_id = twitch_game_map.get(niche.lower(), "509658")
+        headers = {
+            "Client-ID": client_id,
+            "Authorization": f"Bearer {access_token}",
+        }
+        clips_resp = requests.get(
+            "https://api.twitch.tv/helix/clips",
+            headers=headers,
+            params={"game_id": game_id, "first": min(limit, 50)},
+            timeout=5.0,
+        )
+        if clips_resp.status_code != 200:
+            logger.warning("Twitch Helix clips fetch failed: %s", clips_resp.text)
+            return []
+
+        data = clips_resp.json().get("data", [])
+        clips: List[Dict[str, Any]] = []
+        now_utc = datetime.now(timezone.utc)
+
+        for c in data:
+            raw_views = int(c.get("view_count", 0))
+            pub_at = c.get("created_at", "")
+            hrs = 12
+            if pub_at:
+                try:
+                    dt = datetime.fromisoformat(pub_at.replace("Z", "+00:00"))
+                    diff_sec = (now_utc - dt).total_seconds()
+                    hrs = max(1, int(diff_sec // 3600))
+                except Exception:
+                    pass
+
+            published_label = f"{hrs}h ago" if hrs < 24 else f"{hrs // 24}d ago"
+            if timeframe == "24h" and hrs >= 24:
+                continue
+
+            views_per_hour = round(raw_views / max(0.5, hrs))
+            velocity_pts = min(40, max(0, math.log10(max(1, views_per_hour)) * 8))
+            virality_score = min(99, max(50, round(50 + velocity_pts)))
+
+            clips.append({
+                "id": c.get("id"),
+                "platform": "twitch",
+                "platform_icon": "🟣",
+                "title": c.get("title", ""),
+                "channel": c.get("broadcaster_name", ""),
+                "views": f"{raw_views:,} views",
+                "published": published_label,
+                "duration": f"{round(float(c.get('duration', 30)))}s",
+                "thumbnail": c.get("thumbnail_url", ""),
+                "url": c.get("url", ""),
+                "virality_score": virality_score,
+                "score_explanation": f"Twitch clip with {raw_views:,} views ({views_per_hour:,}/hr)",
+                "verified_metrics": True,
+                "region": "Twitch 🟣",
+                "niche": niche,
+                "observed_at": now_utc.isoformat(),
+            })
+            if len(clips) >= limit:
+                break
+        return clips
+    except Exception as e:
+        logger.warning("Twitch clips fetch failed: %s", e)
+        return []
 
 
 def fetch_all_trending(
@@ -674,7 +780,7 @@ def fetch_all_trending(
             merged.append(v)
 
     # Sort so highest viral score is on top
-    merged.sort(key=lambda x: x.get("virality_score", 0), reverse=True)
+    merged.sort(key=lambda x: (x.get("virality_score") or 0), reverse=True)
     _TRENDING_CACHE[cache_key] = (now, merged)
     return merged
 

@@ -27,6 +27,15 @@ export async function POST(
   { params }: { params: Promise<{ path: string[] }> }
 ) {
   const session = await getServerSession();
+
+  // Enforce authentication on all trending POST actions (learn-now, live-monitor, check-transcription, autoclip)
+  if (!session?.user?.id) {
+    return NextResponse.json(
+      { error: "Authentication required to trigger live monitoring, clipping, or AI analysis" },
+      { status: 401 }
+    );
+  }
+
   const { path } = await params;
   const incomingUrl = new URL(request.url);
   const targetPath = `/trending/${path.join("/")}${incomingUrl.search}`;
@@ -44,7 +53,7 @@ export async function POST(
 
   const upstream = await fetchBackend(targetPath, {
     method: "POST",
-    userId: session?.user?.id ?? "anonymous",
+    userId: session.user.id,
     extraHeaders: {
       "Content-Type": request.headers.get("content-type") ?? "application/json",
       ...authHeaders,

@@ -39,14 +39,14 @@ import { UpgradeThankYou } from "@/components/billing/upgrade-thank-you";
 import { toast } from "sonner";
 import { track } from "@/lib/datafast";
 import Link from "next/link";
-import { AlertCircle, Bot, Check, ChevronRight, Clock, Cpu, CreditCard, ExternalLink, FastForward, Info, Languages, Layers, Loader2, Mail, Megaphone, Mic, PlayCircle, RefreshCw, Send, Share2, Sparkles, Type, Users, Volume2, Zap } from "lucide-react";
+import { AlertCircle, Bot, Check, ChevronRight, Clock, Cpu, CreditCard, Info, Languages, Layers, Loader2, Mail, Megaphone, Mic, RefreshCw, Send, Share2, Sparkles, Type, Users, Volume2, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DEFAULT_SITE_URL, GITHUB_URL } from "@/lib/site";
 import { FontSelectOption, type FontOption } from "@/components/font-select-option";
 import { SocialProviderIcon } from "@/components/social-provider-icon";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { PROVIDER_LABELS, type SocialConnection, type SocialProviderId, type SocialProviderStatus } from "@/lib/social";
+import { PROVIDER_LABELS, type SocialConnection, type SocialProviderId } from "@/lib/social";
 
 interface UserPreferences {
   fontFamily: string;
@@ -93,7 +93,6 @@ export default function SettingsPage() {
   const [aiVoiceStyle, setAiVoiceStyle] = useState("viral_guy");
 
   // Social Connections & Direct Post state
-  const [socialProviders, setSocialProviders] = useState<SocialProviderStatus[]>([]);
   const [socialConnections, setSocialConnections] = useState<SocialConnection[]>([]);
   const [loadingSocial, setLoadingSocial] = useState(false);
   const [directPostOpen, setDirectPostOpen] = useState(false);
@@ -105,14 +104,7 @@ export default function SettingsPage() {
   const loadSocialData = useCallback(async () => {
     setLoadingSocial(true);
     try {
-      const [provRes, connRes] = await Promise.all([
-        fetch("/api/social/providers", { cache: "no-store" }),
-        fetch("/api/social/connections", { cache: "no-store" }),
-      ]);
-      if (provRes.ok) {
-        const pData = await provRes.json();
-        setSocialProviders(pData.providers || []);
-      }
+      const connRes = await fetch("/api/social/connections", { cache: "no-store" });
       if (connRes.ok) {
         const cData = await connRes.json();
         setSocialConnections(cData.connections || []);
@@ -180,7 +172,7 @@ export default function SettingsPage() {
     } catch {}
   }, []);
 
-  const updateAutoClipSetting = (key: string, val: any) => {
+  const updateAutoClipSetting = (key: string, val: string | number | boolean) => {
     try {
       const current = JSON.parse(localStorage.getItem("supoclip_autoclip_settings") || "{}");
       current[key] = val;
@@ -918,7 +910,7 @@ export default function SettingsPage() {
               {(["youtube", "tiktok", "instagram"] as const).map((prov) => {
                 const connection = socialConnections.find((c) => c.provider === prov);
                 const isConnected = connection && connection.status === "active";
-                const label = prov === "youtube" ? "YouTube" : prov === "tiktok" ? "TikTok" : "Instagram";
+                const label = PROVIDER_LABELS[prov] || (prov === "youtube" ? "YouTube" : prov === "tiktok" ? "TikTok" : "Instagram");
 
                 return (
                   <div

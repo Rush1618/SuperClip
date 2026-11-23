@@ -9,7 +9,6 @@ import {
   Film,
   Layers,
   Loader2,
-  Sparkles,
   X,
   Zap,
 } from "lucide-react";
@@ -37,8 +36,6 @@ export function BackgroundClippingDock() {
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
-    let timer: NodeJS.Timeout;
-
     const checkTasks = async () => {
       try {
         const res = await fetch("/api/tasks", { cache: "no-store" });
@@ -57,7 +54,7 @@ export function BackgroundClippingDock() {
     };
 
     void checkTasks();
-    timer = setInterval(checkTasks, 3000);
+    const timer = setInterval(checkTasks, 3000);
 
     return () => clearInterval(timer);
   }, []);
@@ -119,6 +116,7 @@ export function BackgroundClippingDock() {
           </span>
 
           {primaryThumb ? (
+            /* eslint-disable-next-line @next/next/no-img-element */
             <img
               src={primaryThumb}
               alt={primaryTitle}
@@ -215,6 +213,7 @@ export function BackgroundClippingDock() {
                   <div className="flex items-start gap-2.5">
                     {/* Video Thumbnail */}
                     {thumb ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
                       <img
                         src={thumb}
                         alt={title}

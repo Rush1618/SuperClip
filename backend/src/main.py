@@ -100,8 +100,9 @@ def create_app(
                 logger.warning("Could not publish the API media volume id", exc_info=True)
 
             try:
-                from .services.trending_service import start_continuous_learning_agent
-                start_continuous_learning_agent()
+                if os.getenv("ENABLE_BACKGROUND_VIRAL_LEARNING", "false").lower() in ("true", "1", "yes"):
+                    from .services.trending_service import start_continuous_learning_agent
+                    start_continuous_learning_agent()
             except Exception as e:
                 logger.warning("Could not start continuous viral learning agent: %s", e)
 

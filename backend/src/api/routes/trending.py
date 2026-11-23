@@ -4,10 +4,12 @@ Trending USA Video Discovery, Live Stream Hype Monitor & Autonomous Clipping API
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth_headers import AuthContext, resolve_auth_context
@@ -32,16 +34,41 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/trending", tags=["trending"])
 
 
+class LiveMonitorRequest(BaseModel):
+    url: str = Field(..., min_length=1, max_length=2048, description="URL of live stream or video to monitor")
+    channel: Optional[str] = Field(None, max_length=256, description="Optional channel or streamer name")
+
+
+class TranscriptionCheckRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=100000, description="Transcription text to analyze and heal")
+    channel: Optional[str] = Field(None, max_length=256, description="Channel or speaker context")
+    context: Optional[str] = Field(None, max_length=1024, description="Additional context or topic")
+
+
+async def require_auth(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> AuthContext:
+    """Validate authenticated caller identity for protected trending operations."""
+    return await resolve_auth_context(request, db, get_config())
+
+
 @router.get("")
 async def get_trending_videos(
+    request: Request,
     platform: str = "all",
     region: str = "US",
     niche: str = "all",
     timeframe: str = "24h",
     limit: int = 25,
     refresh: bool = False,
+    db: AsyncSession = Depends(get_db),
 ):
     """Fetch top trending YouTube and Twitch clips/videos filtered by Region, Niche, and Recent 24h Timeframe."""
+    if refresh:
+        # Require authentication to force an unthrottled live upstream refresh
+        await resolve_auth_context(request, db, get_config())
+
     videos = fetch_all_trending(platform=platform, region=region, niche=niche, timeframe=timeframe, limit=limit, force_refresh=refresh)
     memory = get_learning_memory()
     return {
@@ -68,6 +95,7 @@ async def force_refresh_trending(
     niche: str = "all",
     timeframe: str = "24h",
     limit: int = 25,
+    auth: AuthContext = Depends(require_auth),
 ):
     """Force an immediate refresh by querying live YouTube feeds and updating the feed."""
     clear_trending_cache()
@@ -76,14 +104,18 @@ async def force_refresh_trending(
 
 
 @router.get("/learning-status")
-async def get_learning_agent_status():
+async def get_learning_agent_status(
+    auth: AuthContext = Depends(require_auth),
+):
     """Retrieve details on what the autonomous agent has learned."""
     memory = get_learning_memory()
     return {"learning_agent": memory}
 
 
 @router.post("/learn-now")
-async def trigger_learning_pass():
+async def trigger_learning_pass(
+    auth: AuthContext = Depends(require_auth),
+):
     """Trigger an immediate autonomous learning pass from current trending videos."""
     memory = await learn_from_trending_videos()
     return {
@@ -93,57 +125,38 @@ async def trigger_learning_pass():
     }
 
 
-import json
-import re
-
-async def _safe_json_body(request: Request) -> Dict[str, Any]:
-    try:
-        body = await request.body()
-        if not body:
-            return {}
-        text = body.decode("utf-8", errors="replace").strip()
-        if text.startswith('"{') and text.endswith('}"'):
-            text = text[1:-1].replace(r'\"', '"')
-        # Handle literal backslash escapes
-        text = re.sub(r'\\([^"\\/bfnrtu])', r'\1', text)
-        return json.loads(text)
-    except Exception:
-        try:
-            return await request.json()
-        except Exception:
-            return {}
-
-
 @router.post("/live-monitor")
-async def monitor_live_stream_endpoint(request: Request):
+async def monitor_live_stream_endpoint(
+    payload: LiveMonitorRequest,
+    auth: AuthContext = Depends(require_auth),
+):
     """Analyze a live stream (YouTube or Twitch) for peak hype moments and chat spikes."""
-    body = await _safe_json_body(request)
-    url = body.get("url")
-    channel = body.get("channel")
-    if not url or not isinstance(url, str):
-        raise HTTPException(status_code=400, detail="Missing or invalid live stream URL")
-    return analyze_stream_hype_moments(url, channel_hint=channel)
+    url = payload.url.strip()
+    if not url:
+        raise HTTPException(status_code=422, detail="Missing or invalid live stream URL")
+    return analyze_stream_hype_moments(url, channel_hint=payload.channel)
 
 
 @router.post("/check-transcription")
-async def check_transcription_endpoint(request: Request):
+async def check_transcription_endpoint(
+    payload: TranscriptionCheckRequest,
+    auth: AuthContext = Depends(require_auth),
+):
     """
     Examine live speech transcription, extract important keywords ('imp words'),
     and perform AI-powered speech error detection and self-healing.
     """
-    body = await _safe_json_body(request)
-    text = body.get("text") or ""
-    channel = body.get("channel") or ""
-    context = body.get("context") or ""
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="Missing or empty transcription text")
-    return await check_and_heal_transcript(text, channel=channel, context=context)
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Missing or empty transcription text")
+    return await check_and_heal_transcript(text, channel=payload.channel or "", context=payload.context or "")
 
 
 @router.post("/autoclip")
 async def autoclip_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Automatically queue and create a clipping task for a trending video or specific
@@ -151,22 +164,34 @@ async def autoclip_endpoint(
     """
     from .tasks import SourceAttempt, _create_task
 
-    # Inspect incoming payload to resolve unplayable live channel URLs
-    body_dict = await _safe_json_body(request)
+    try:
+        body_dict = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid JSON body")
+
     raw_source = body_dict.get("source") or {}
     orig_url = str(raw_source.get("url") or "").strip()
     if orig_url:
-        playable = resolve_playable_stream_url(orig_url, channel=raw_source.get("title") or "")
-        if playable != orig_url:
-            raw_source["url"] = playable
-            body_dict["source"] = raw_source
-            new_bytes = json.dumps(body_dict).encode("utf-8")
-            request._body = new_bytes
-            if hasattr(request, "_json"):
-                delattr(request, "_json")
-            async def new_receive():
-                return {"type": "http.request", "body": new_bytes, "more_body": False}
-            request._receive = new_receive
+        try:
+            playable = resolve_playable_stream_url(orig_url, channel=raw_source.get("title") or "")
+            if playable != orig_url:
+                raw_source["url"] = playable
+                body_dict["source"] = raw_source
+        except ValueError as err:
+            raise HTTPException(
+                status_code=422,
+                detail=f"STREAM_NOT_PLAYABLE: {str(err)}",
+            )
+
+    new_bytes = json.dumps(body_dict).encode("utf-8")
+    request._body = new_bytes
+    if hasattr(request, "_json"):
+        delattr(request, "_json")
+
+    async def new_receive():
+        return {"type": "http.request", "body": new_bytes, "more_body": False}
+
+    request._receive = new_receive
 
     attempt = SourceAttempt(request, db)
     try:

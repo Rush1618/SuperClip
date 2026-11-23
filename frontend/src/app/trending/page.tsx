@@ -1,16 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Activity,
   Check,
   ChevronDown,
   ChevronUp,
   ExternalLink,
   Flame,
-  Globe,
   Layers,
   Loader2,
   Mic,
@@ -21,9 +18,6 @@ import {
   Sparkles,
   Square,
   TrendingUp,
-  Tv,
-  Users,
-  Video,
   Wand2,
   Zap,
 } from "lucide-react";
@@ -47,9 +41,12 @@ interface TrendingVideo {
   duration?: string;
   thumbnail: string;
   url: string;
-  virality_score: number;
+  virality_score?: number | null;
+  score_explanation?: string;
+  verified_metrics?: boolean;
   region: string;
   niche?: string;
+  observed_at?: string;
 }
 
 interface LearningAgentInfo {
@@ -58,6 +55,8 @@ interface LearningAgentInfo {
   videos_analyzed: number;
   last_learned_at?: string;
   active_hooks?: string[];
+  model?: string;
+  learned_patterns_count?: number;
 }
 
 interface TranscriptionError {
@@ -90,6 +89,8 @@ interface HypeMoment {
   platform: string;
   channel: string;
   stream_url: string;
+  is_playable?: boolean;
+  is_simulated?: boolean;
   reason: string;
   spoken_transcript?: string;
   important_words?: string[];
@@ -98,6 +99,11 @@ interface HypeMoment {
 
 interface LiveMonitorResult {
   status: string;
+  is_simulated?: boolean;
+  pipeline_status?: string;
+  pipeline_notice?: string;
+  source_kind?: string;
+  is_playable?: boolean;
   platform: string;
   channel: string;
   stream_url: string;
@@ -162,6 +168,8 @@ export default function TrendingPage() {
   const [monitoringStream, setMonitoringStream] = useState(false);
   const [liveResult, setLiveResult] = useState<LiveMonitorResult | null>(null);
   const [expandedDiffs, setExpandedDiffs] = useState<Record<string, boolean>>({});
+  const [activeLiveTaskId, setActiveLiveTaskId] = useState<string | null>(null);
+  const [autoClippedMomentId, setAutoClippedMomentId] = useState<string | null>(null);
 
   // Speech & Error Lab State
   const [customSpeech, setCustomSpeech] = useState(
@@ -170,37 +178,52 @@ export default function TrendingPage() {
   const [testingSpeech, setTestingSpeech] = useState(false);
   const [speechAnalysisResult, setSpeechAnalysisResult] = useState<TranscriptionCheck | null>(null);
 
-  const fetchTrendingData = async (
-    platform = selectedPlatform,
-    region = selectedRegion,
-    niche = selectedNiche,
-    timeframe = selectedTimeframe,
-    forceRefresh = false
-  ) => {
-    if (forceRefresh) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-    try {
-      const refreshParam = forceRefresh ? "&refresh=true" : "";
-      const res = await fetch(
-        `/api/trending?platform=${platform}&region=${region}&niche=${niche}&timeframe=${timeframe}${refreshParam}`
-      );
-      if (!res.ok) throw new Error("Failed to load trending content");
-      const data = await res.json();
-      setVideos(data.videos || []);
-      setLearningAgent(data.learning_agent || null);
-      if (forceRefresh) {
-        toast.success("Checked YouTube: trending feed updated with fresh videos!");
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const fetchTrendingData = useCallback(
+    async (
+      platform = selectedPlatform,
+      region = selectedRegion,
+      niche = selectedNiche,
+      timeframe = selectedTimeframe,
+      forceRefresh = false
+    ) => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Error loading trending content");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
+      if (forceRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      try {
+        const refreshParam = forceRefresh ? "&refresh=true" : "";
+        const res = await fetch(
+          `/api/trending?platform=${platform}&region=${region}&niche=${niche}&timeframe=${timeframe}${refreshParam}`,
+          { signal: controller.signal }
+        );
+        if (!res.ok) throw new Error("Failed to load trending content");
+        const data = await res.json();
+        setVideos(data.videos || []);
+        setLearningAgent(data.learning_agent || null);
+        if (forceRefresh) {
+          toast.success("Checked YouTube: trending feed updated with fresh videos!");
+        }
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === "AbortError") {
+          return;
+        }
+        toast.error(err instanceof Error ? err.message : "Error loading trending content");
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [selectedPlatform, selectedRegion, selectedNiche, selectedTimeframe]
+  );
 
   useEffect(() => {
     try {
@@ -215,7 +238,12 @@ export default function TrendingPage() {
 
   useEffect(() => {
     void fetchTrendingData(selectedPlatform, selectedRegion, selectedNiche, selectedTimeframe);
-  }, [selectedPlatform, selectedRegion, selectedNiche, selectedTimeframe]);
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, [selectedPlatform, selectedRegion, selectedNiche, selectedTimeframe, fetchTrendingData]);
 
   const toggleSelectVideo = (id: string) => {
     setSelectedIds((prev) =>
@@ -304,7 +332,7 @@ export default function TrendingPage() {
       toast.error("No trending videos available");
       return;
     }
-    const topBatch = [...videos].sort((a, b) => b.virality_score - a.virality_score).slice(0, count);
+    const topBatch = [...videos].sort((a, b) => (b.virality_score ?? 0) - (a.virality_score ?? 0)).slice(0, count);
     await handleBatchClip(topBatch);
   };
 
@@ -363,13 +391,17 @@ export default function TrendingPage() {
       toast.error("No trending videos available");
       return;
     }
-    const topVideo = [...videos].sort((a, b) => b.virality_score - a.virality_score)[0];
+    const topVideo = [...videos].sort((a, b) => (b.virality_score ?? 0) - (a.virality_score ?? 0))[0];
     toast.info(`Auto-Clip Mode: Selected #1 viral video "${topVideo.title.slice(0, 36)}..."`);
     await handleAutoClip(topVideo);
   };
 
-  const handleAutoClipHypeMoment = async (moment: HypeMoment) => {
+  const handleAutoClipHypeMoment = async (
+    moment: HypeMoment,
+    redirectToTask: boolean = false
+  ): Promise<string | null> => {
     setClippingId(moment.id);
+    setAutoClippedMomentId(moment.id);
     toast.info(`Extracting hype moment (${moment.timestamp_label}) from ${moment.channel}...`);
     try {
       const rawDuration = moment.end_seconds - moment.start_seconds;
@@ -391,14 +423,19 @@ export default function TrendingPage() {
         remove_filler_words: true,
       };
 
-      let res = await fetch("/api/tasks/create", {
+      // Try trending autoclip endpoint first (resolves raw live channel URLs to playable sources)
+      let res = await fetch("/api/trending/autoclip", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
-        res = await fetch("/api/trending/autoclip", {
+        const err = await res.json().catch(() => ({}));
+        if (err.detail && typeof err.detail === "string" && err.detail.includes("STREAM_NOT_PLAYABLE")) {
+          throw new Error(err.detail.replace("STREAM_NOT_PLAYABLE: ", ""));
+        }
+        res = await fetch("/api/tasks/create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -406,29 +443,41 @@ export default function TrendingPage() {
       }
 
       if (!res.ok) {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || err.error || "Failed to extract hype moment");
       }
       const data = await res.json();
-      toast.success(`Hype moment queued! Processing ${moment.duration} clip...`);
       const taskId = data.task_id || data.id;
       if (taskId) {
-        router.push(`/tasks/${taskId}`);
+        setActiveLiveTaskId(taskId);
+        toast.success(`⚡ Auto-clipped! Processing "${moment.title.slice(0, 32)}..."`);
+        if (redirectToTask) {
+          router.push(`/tasks/${taskId}`);
+        }
+        return taskId;
       }
+      return null;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to clip hype moment");
+      return null;
     } finally {
       setClippingId(null);
     }
   };
 
-  const handleLiveMonitor = async (targetUrl?: string, channelName?: string) => {
+  const handleLiveMonitor = async (
+    targetUrl?: string,
+    channelName?: string,
+    autoClip: boolean = true
+  ) => {
     const url = (targetUrl || streamInput).trim();
     if (!url) {
       toast.error("Please enter a valid YouTube or Twitch live URL");
       return;
     }
     setMonitoringStream(true);
+    setActiveLiveTaskId(null);
+    setAutoClippedMomentId(null);
     toast.info("Scanning live stream chat velocity, comments spikes & speech...");
     try {
       const res = await fetch("/api/trending/live-monitor", {
@@ -442,12 +491,39 @@ export default function TrendingPage() {
       }
       const data: LiveMonitorResult = await res.json();
       setLiveResult(data);
-      toast.success(`Found ${data.detected_moments.length} peak hype moments in ${data.channel}'s broadcast!`);
+      if (autoClip && data.detected_moments && data.detected_moments.length > 0) {
+        if (data.is_playable === false) {
+          toast.warning("Broadcast detected: In-progress live streams require an archived VOD or clip URL before video clipping can begin.");
+        } else {
+          // Automatically select the highest hype moment and queue it immediately
+          const sorted = [...data.detected_moments].sort((a, b) => b.hype_score - a.hype_score);
+          const bestMoment = sorted[0];
+          toast.success(
+            `⚡ Truly Automatic: Found ${data.detected_moments.length} moments! Auto-clipping peak: "${bestMoment.title}" (${bestMoment.hype_score}/100 Hype)`
+          );
+          void handleAutoClipHypeMoment(bestMoment, false);
+        }
+      } else {
+        toast.success(`Found ${data.detected_moments.length} peak hype moments in ${data.channel}'s broadcast!`);
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to monitor live stream");
     } finally {
       setMonitoringStream(false);
     }
+  };
+
+  const handleBatchClipMoments = async (moments: HypeMoment[]) => {
+    if (moments.length === 0) return;
+    toast.info(`⚡ Multitask Mode: Queueing ${moments.length} hype moments for background processing...`);
+    let count = 0;
+    for (const m of moments) {
+      try {
+        const id = await handleAutoClipHypeMoment(m, false);
+        if (id) count++;
+      } catch {}
+    }
+    toast.success(`⚡ Finished: ${count} of ${moments.length} moments queued successfully!`);
   };
 
   const handleSpeechCheck = async () => {
@@ -507,9 +583,21 @@ export default function TrendingPage() {
                 <Flame className="size-4" />
               </span>
               <h1 className="font-display text-2xl font-bold tracking-tight">Viral Radar</h1>
-              <Badge variant="secondary" className="text-xs font-mono">
-                AI Live
-              </Badge>
+              {learningAgent ? (
+                <Badge variant="outline" className="text-xs font-mono gap-1 border-primary/30 bg-primary/5 text-primary">
+                  <Sparkles className="size-3" />
+                  <span>{learningAgent.model || `Cycle #${learningAgent.cycles_completed || 1}`}</span>
+                  {(learningAgent.learned_patterns_count ?? learningAgent.active_hooks?.length ?? 0) > 0 && (
+                    <span className="text-muted-foreground">
+                      ({learningAgent.learned_patterns_count ?? learningAgent.active_hooks?.length ?? 0} rules)
+                    </span>
+                  )}
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="text-xs font-mono">
+                  Radar Feed
+                </Badge>
+              )}
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
               Track breakout videos, monitor live stream spikes, and self-heal speech errors.
@@ -858,6 +946,7 @@ export default function TrendingPage() {
                       <div>
                         {/* Thumbnail & Badges */}
                         <div className="group/thumb relative aspect-video w-full bg-muted overflow-hidden">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={video.thumbnail}
                             alt={video.title}
@@ -888,9 +977,22 @@ export default function TrendingPage() {
                             <Badge variant="secondary" className="bg-background/90 backdrop-blur-xs font-semibold text-[11px] shadow-2xs">
                               {video.platform_icon || (video.platform === "twitch" ? "🟣" : "▶️")} {video.platform === "twitch" ? "Twitch" : "YouTube"}
                             </Badge>
-                            <Badge className="bg-amber-500 text-white font-bold text-[11px] shadow-2xs">
-                              ⚡ {video.virality_score}
-                            </Badge>
+                            {video.virality_score != null ? (
+                              <Badge
+                                title={video.score_explanation || "Calculated from view velocity & engagement"}
+                                className="bg-amber-500 text-white font-bold text-[11px] shadow-2xs"
+                              >
+                                ⚡ {video.virality_score}
+                              </Badge>
+                            ) : (
+                              <Badge
+                                variant="secondary"
+                                title={video.score_explanation || "Live metrics not available from feed"}
+                                className="bg-background/80 text-muted-foreground font-medium text-[10px] shadow-2xs border border-dashed"
+                              >
+                                {video.score_explanation ? "Estimated" : "New"}
+                              </Badge>
+                            )}
                           </div>
 
                           {/* Multitask selection checkbox */}
@@ -995,13 +1097,29 @@ export default function TrendingPage() {
         {/* TAB 2: Live Stream Monitor */}
         {activeTab === "live_monitor" && (
           <div className="mt-4 space-y-4">
+            {/* Architecture Preview Banner */}
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-foreground flex items-start gap-2.5">
+              <span className="text-base select-none">🧪</span>
+              <div className="space-y-0.5">
+                <span className="font-semibold block text-amber-600 dark:text-amber-400">Stream Ingestion & Chat Spikes (Preview Architecture)</span>
+                <span className="text-[11px] leading-relaxed block text-muted-foreground">
+                  This interface previews real-time stream ingestion and rolling hype detection. Production live chat tracking requires active Twitch IRC or YouTube Live Chat connector rolling buffers. To clip active streams, select an archived VOD or completed clip URL.
+                </span>
+              </div>
+            </div>
+
             {/* Input & Presets */}
             <div className="rounded-xl border bg-card p-4 shadow-2xs space-y-3">
-              <div>
-                <h2 className="text-sm font-semibold tracking-tight">Monitor Live Stream Peaks</h2>
-                <p className="text-xs text-muted-foreground">
-                  Paste any Twitch or YouTube Live URL to detect high-velocity chat spikes and speech.
-                </p>
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold tracking-tight">Autonomous Live Stream Clipper</h2>
+                  <p className="text-xs text-muted-foreground">
+                    Select any live stream to immediately detect peak chat spikes and automatically clip the best moment with zero extra clicks.
+                  </p>
+                </div>
+                <Badge variant="outline" className="w-fit text-[10px] gap-1 text-amber-500 border-amber-500/30 bg-amber-500/10">
+                  <Zap className="size-3 fill-amber-500" /> Truly Automatic
+                </Badge>
               </div>
 
               <div className="flex flex-col gap-2 sm:flex-row">
@@ -1012,16 +1130,16 @@ export default function TrendingPage() {
                   className="flex-1 text-xs h-9"
                 />
                 <Button
-                  onClick={() => handleLiveMonitor()}
+                  onClick={() => handleLiveMonitor(undefined, undefined, true)}
                   disabled={monitoringStream}
-                  className="gap-2 shrink-0 text-xs font-medium h-9"
+                  className="gap-2 shrink-0 text-xs font-semibold h-9 bg-linear-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white"
                 >
                   {monitoringStream ? (
                     <Loader2 className="size-3.5 animate-spin" />
                   ) : (
-                    <Activity className="size-3.5 text-amber-400" />
+                    <Zap className="size-3.5 text-yellow-200 fill-yellow-200" />
                   )}
-                  <span>Scan Stream Hype</span>
+                  <span>Auto-Clip Live Stream</span>
                 </Button>
               </div>
 
@@ -1034,7 +1152,7 @@ export default function TrendingPage() {
                     type="button"
                     onClick={() => {
                       setStreamInput(preset.url);
-                      void handleLiveMonitor(preset.url, preset.channel);
+                      void handleLiveMonitor(preset.url, preset.channel, true);
                     }}
                     className="inline-flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-0.5 text-[11px] hover:bg-muted font-medium transition-colors"
                   >
@@ -1045,6 +1163,37 @@ export default function TrendingPage() {
               </div>
             </div>
 
+            {/* Autonomous Clip Status Banner */}
+            {autoClippedMomentId && (
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-xs shadow-xs">
+                <div className="flex items-center gap-3">
+                  <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-500">
+                    <Zap className="size-4 fill-emerald-500" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-foreground">Peak Hype Moment Auto-Clipped!</span>
+                      <Badge className="bg-emerald-500 text-white text-[10px] px-1.5 py-0 h-4">Autonomous Queue</Badge>
+                    </div>
+                    <p className="text-muted-foreground text-[11px]">
+                      The #1 peak moment was automatically identified and queued for vertical video generation without requiring an extra click.
+                    </p>
+                  </div>
+                </div>
+                {activeLiveTaskId && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 text-xs h-7.5 gap-1.5 shrink-0"
+                    onClick={() => router.push(`/tasks/${activeLiveTaskId}`)}
+                  >
+                    <span>View Clip Progress</span>
+                    <ExternalLink className="size-3" />
+                  </Button>
+                )}
+              </div>
+            )}
+
             {/* Live Stats Summary */}
             {liveResult && (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-3 shadow-2xs text-xs">
@@ -1053,7 +1202,7 @@ export default function TrendingPage() {
                   <span className="font-bold text-foreground">{liveResult.channel} Live</span>
                   <span className="text-muted-foreground capitalize">({liveResult.platform})</span>
                 </div>
-                <div className="flex items-center gap-4 text-muted-foreground">
+                <div className="flex items-center gap-3 text-muted-foreground">
                   <div>
                     <span className="text-[10px] uppercase block">Velocity</span>
                     <span className="font-semibold text-foreground">{liveResult.active_chat_velocity}</span>
@@ -1063,6 +1212,16 @@ export default function TrendingPage() {
                     <span className="text-[10px] uppercase block">Hype Score</span>
                     <span className="font-semibold text-amber-500">{liveResult.hype_index}</span>
                   </div>
+                  <div className="h-4 w-px bg-border" />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleBatchClipMoments(liveResult.detected_moments)}
+                    className="gap-1.5 text-xs h-7 font-medium border-amber-500/30 hover:bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                  >
+                    <Zap className="size-3 fill-current" />
+                    <span>Auto-Clip All Moments ({liveResult.detected_moments.length})</span>
+                  </Button>
                 </div>
               </div>
             )}
@@ -1077,17 +1236,28 @@ export default function TrendingPage() {
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
                   {liveResult.detected_moments.map((moment) => {
                     const isDiffOpen = Boolean(expandedDiffs[moment.id]);
+                    const isAutoClipped = moment.id === autoClippedMomentId;
                     return (
                       <div
                         key={moment.id}
-                        className="flex flex-col justify-between rounded-xl border bg-card p-4 transition-all hover:border-foreground/20 hover:shadow-2xs space-y-3"
+                        className={cn(
+                          "flex flex-col justify-between rounded-xl border bg-card p-4 transition-all hover:border-foreground/20 hover:shadow-2xs space-y-3",
+                          isAutoClipped && "border-emerald-500/40 bg-emerald-500/5 ring-1 ring-emerald-500/20"
+                        )}
                       >
                         <div className="space-y-2.5">
                           {/* Header pill */}
                           <div className="flex items-center justify-between">
-                            <Badge className="bg-amber-500/15 text-amber-600 dark:text-amber-400 font-bold text-[11px] border-amber-500/20">
-                              🔥 {moment.hype_score}/100 Hype
-                            </Badge>
+                            <div className="flex items-center gap-1.5">
+                              <Badge className="bg-amber-500/15 text-amber-600 dark:text-amber-400 font-bold text-[11px] border-amber-500/20">
+                                🔥 {moment.hype_score}/100 Hype
+                              </Badge>
+                              {isAutoClipped && (
+                                <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-bold text-[10px] border-emerald-500/30 flex items-center gap-1">
+                                  <Zap className="size-2.5 fill-current" /> Auto-Clipped
+                                </Badge>
+                              )}
+                            </div>
                             <span className="text-[11px] font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
                               ⏱️ {moment.timestamp_label}
                             </span>
@@ -1176,19 +1346,31 @@ export default function TrendingPage() {
 
                         {/* Action Auto-Clip */}
                         <div className="pt-2 border-t">
-                          <Button
-                            size="sm"
-                            className="w-full gap-1.5 text-xs font-semibold h-8"
-                            onClick={() => handleAutoClipHypeMoment(moment)}
-                            disabled={clippingId === moment.id}
-                          >
-                            {clippingId === moment.id ? (
-                              <Loader2 className="size-3.5 animate-spin" />
-                            ) : (
-                              <Scissors className="size-3.5" />
-                            )}
-                            <span>Clip</span>
-                          </Button>
+                          {isAutoClipped && activeLiveTaskId ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full gap-1.5 text-xs font-semibold h-8 border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
+                              onClick={() => router.push(`/tasks/${activeLiveTaskId}`)}
+                            >
+                              <ExternalLink className="size-3.5" />
+                              <span>View Clip Progress</span>
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              className="w-full gap-1.5 text-xs font-semibold h-8"
+                              onClick={() => handleAutoClipHypeMoment(moment, true)}
+                              disabled={clippingId === moment.id}
+                            >
+                              {clippingId === moment.id ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <Scissors className="size-3.5" />
+                              )}
+                              <span>Clip This Moment</span>
+                            </Button>
+                          )}
                         </div>
                       </div>
                     );
