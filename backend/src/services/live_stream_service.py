@@ -14,6 +14,7 @@ import logging
 import re
 import socket
 import time
+import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -22,6 +23,66 @@ from urllib.parse import urlparse
 from .trending_service import _get_agent, get_learning_memory, save_learning_memory
 
 logger = logging.getLogger(__name__)
+
+ACTIVE_STREAM_SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+
+async def _persist_live_session_and_event(
+    session_id: str,
+    user_id: Optional[str],
+    channel: str,
+    platform: str,
+    stream_url: str,
+    started_at_sec: float,
+    event_type: str,
+    stream_time_sec: float,
+    velocity: int,
+    hype_score: int,
+    top_emotes: List[str],
+    payload: Dict[str, Any],
+) -> None:
+    """Persist active live monitoring sessions and real velocity events to PostgreSQL."""
+    try:
+        from ..database import get_session_maker
+        from sqlalchemy import text
+        sm = get_session_maker()
+        started_dt = datetime.fromtimestamp(started_at_sec, tz=timezone.utc)
+        async with sm() as db:
+            await db.execute(
+                text("""
+                    INSERT INTO live_stream_sessions (id, user_id, channel, platform, stream_url, status, started_at, last_ping_at, metadata)
+                    VALUES (:id, :user_id, :channel, :platform, :stream_url, 'active', :started_at, NOW(), :metadata::jsonb)
+                    ON CONFLICT (id) DO UPDATE SET last_ping_at = NOW()
+                """),
+                {
+                    "id": session_id,
+                    "user_id": user_id,
+                    "channel": channel,
+                    "platform": platform,
+                    "stream_url": stream_url,
+                    "started_at": started_dt,
+                    "metadata": json.dumps({"source": "live_monitor"}),
+                }
+            )
+            await db.execute(
+                text("""
+                    INSERT INTO live_events (id, session_id, event_type, stream_time_seconds, velocity_msgs_per_min, hype_score, top_emotes, payload, created_at)
+                    VALUES (:id, :session_id, :event_type, :stream_time, :velocity, :hype, :emotes, :payload::jsonb, NOW())
+                """),
+                {
+                    "id": f"event-{uuid.uuid4().hex[:12]}",
+                    "session_id": session_id,
+                    "event_type": event_type,
+                    "stream_time": stream_time_sec,
+                    "velocity": velocity,
+                    "hype": hype_score,
+                    "emotes": top_emotes,
+                    "payload": json.dumps(payload),
+                }
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.debug("Database live event persistence skipped: %s", exc)
 
 # Trigger keywords that indicate excitement in live chat
 HYPE_TRIGGERS = [
@@ -289,11 +350,13 @@ async def check_and_heal_transcript(
 
 def analyze_stream_hype_moments(
     stream_url: str,
-    channel_hint: Optional[str] = None
+    channel_hint: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Analyze live stream activity, chat velocity, and viewer sentiment.
     Distinguishes honestly between live broadcasts and VODs without fake substitutions.
+    Tracks active live stream session timing so extracted clips reflect genuine elapsed duration.
     """
     platform = detect_platform_from_url(stream_url)
     clean_url = stream_url.strip()
@@ -341,6 +404,27 @@ def analyze_stream_hype_moments(
         is_live = chat_data["is_live"]
         top_emotes = chat_data["top_emotes"] or ["W", "POG"]
 
+        session_key = f"{platform}:{channel_slug}"
+        now_ts = time.time()
+        session = ACTIVE_STREAM_SESSIONS.get(session_key)
+        if not session or (now_ts - session.get("last_ping", 0)) > 900:
+            session = {
+                "id": f"sess-{uuid.uuid4().hex[:12]}",
+                "started_at": now_ts,
+                "last_ping": now_ts,
+                "channel": channel,
+                "platform": platform,
+                "stream_url": clean_url,
+            }
+            ACTIVE_STREAM_SESSIONS[session_key] = session
+        else:
+            session["last_ping"] = now_ts
+
+        # Accurate relative stream duration from monitoring session onset
+        stream_time_seconds = max(30.0, round(now_ts - session["started_at"], 1))
+        start_seconds = max(0.0, round(stream_time_seconds - 30.0, 1))
+        end_seconds = round(stream_time_seconds, 1)
+
         if is_live and velocity > 0:
             hype_pts = min(99, max(50, round(50 + (velocity / 50.0))))
             status = "active_monitoring"
@@ -349,17 +433,17 @@ def analyze_stream_hype_moments(
             detected_moments = []
             if velocity > 200:
                 now_sec = int(time.time())
-                detected_moments.append({
+                moment_payload = {
                     "id": f"spike-{now_sec}",
                     "title": f"{channel} Live Chat Surge",
                     "hype_score": hype_pts,
                     "chat_velocity": f"{velocity:,} msgs/min",
                     "sentiment": "Excited Spike",
                     "top_triggers": top_emotes,
-                    "start_seconds": 0,
-                    "end_seconds": 30,
-                    "duration": "30s",
-                    "timestamp_label": "Live Stream Window",
+                    "start_seconds": start_seconds,
+                    "end_seconds": end_seconds,
+                    "duration": f"{round(end_seconds - start_seconds)}s",
+                    "timestamp_label": f"{int(start_seconds // 60):02d}:{int(start_seconds % 60):02d} - {int(end_seconds // 60):02d}:{int(end_seconds % 60):02d}",
                     "platform": "twitch",
                     "channel": channel,
                     "stream_url": clean_url,
@@ -368,7 +452,30 @@ def analyze_stream_hype_moments(
                     "reason": f"Real observed chat velocity spike ({velocity:,} msgs/min)",
                     "spoken_transcript": "",
                     "important_words": top_emotes,
-                })
+                }
+                detected_moments.append(moment_payload)
+
+                # Asynchronously persist to database if event loop is running
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(
+                        _persist_live_session_and_event(
+                            session_id=session["id"],
+                            user_id=user_id,
+                            channel=channel,
+                            platform=platform,
+                            stream_url=clean_url,
+                            started_at_sec=session["started_at"],
+                            event_type="chat_velocity_spike",
+                            stream_time_sec=stream_time_seconds,
+                            velocity=velocity,
+                            hype_score=hype_pts,
+                            top_emotes=top_emotes,
+                            payload=moment_payload,
+                        )
+                    )
+                except RuntimeError:
+                    pass
         else:
             hype_pts = 0
             status = "stream_inactive"

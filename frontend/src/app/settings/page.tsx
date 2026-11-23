@@ -39,7 +39,7 @@ import { UpgradeThankYou } from "@/components/billing/upgrade-thank-you";
 import { toast } from "sonner";
 import { track } from "@/lib/datafast";
 import Link from "next/link";
-import { AlertCircle, Bot, Check, ChevronRight, Clock, Cpu, CreditCard, Info, Languages, Layers, Loader2, Mail, Megaphone, Mic, RefreshCw, Send, Share2, Sparkles, Type, Users, Volume2, Zap } from "lucide-react";
+import { Activity, AlertCircle, Bot, Check, CheckCircle2, ChevronRight, Clock, Compass, Cpu, CreditCard, ExternalLink, HardDrive, Info, Languages, Layers, Loader2, Mail, Megaphone, Mic, Play, RefreshCw, Send, Share2, ShieldCheck, Sparkles, Type, Users, Volume2, XCircle, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DEFAULT_SITE_URL, GITHUB_URL } from "@/lib/site";
 import { FontSelectOption, type FontOption } from "@/components/font-select-option";
@@ -91,6 +91,24 @@ export default function SettingsPage() {
   const [chunkDuration, setChunkDuration] = useState("180");
   const [aiVoiceHook, setAiVoiceHook] = useState(true);
   const [aiVoiceStyle, setAiVoiceStyle] = useState("viral_guy");
+  const [autoPublishEnabled, setAutoPublishEnabled] = useState(false);
+  const [localOnlyMode, setLocalOnlyMode] = useState(false);
+
+  // Operational Telemetry, Autopilot, Rights & Queue states
+  const [telemetry, setTelemetry] = useState<any>(null);
+  const [autopilotRules, setAutopilotRules] = useState<any[]>([]);
+  const [autopilotOverview, setAutopilotOverview] = useState<any>(null);
+  const [publishingQueue, setPublishingQueue] = useState<any[]>([]);
+  const [sourceRights, setSourceRights] = useState<any[]>([]);
+  const [isTestingModel, setIsTestingModel] = useState(false);
+  const [createRuleOpen, setCreateRuleOpen] = useState(false);
+  const [newRuleName, setNewRuleName] = useState("");
+  const [newRuleNiche, setNewRuleNiche] = useState("all");
+  const [newRuleScore, setNewRuleScore] = useState("70");
+  const [createRightsOpen, setCreateRightsOpen] = useState(false);
+  const [rightsSourceId, setRightsSourceId] = useState("");
+  const [rightsPlatform, setRightsPlatform] = useState("youtube");
+  const [rightsState, setRightsState] = useState("creator_authorized");
 
   // Social Connections & Direct Post state
   const [socialConnections, setSocialConnections] = useState<SocialConnection[]>([]);
@@ -113,11 +131,197 @@ export default function SettingsPage() {
     setLoadingSocial(false);
   }, []);
 
+  const loadAutomationData = useCallback(async () => {
+    try {
+      const [prefRes, teleRes, autoRes, queueRes, rightsRes] = await Promise.allSettled([
+        fetch("/api/automation/preferences", { cache: "no-store" }),
+        fetch("/api/models/telemetry", { cache: "no-store" }),
+        fetch("/api/autopilot/overview", { cache: "no-store" }),
+        fetch("/api/auto-upload/queue", { cache: "no-store" }),
+        fetch("/api/rights", { cache: "no-store" }),
+      ]);
+
+      if (prefRes.status === "fulfilled" && prefRes.value.ok) {
+        const p = await prefRes.value.json();
+        if (p.primary_ai_model) setLocalModel(p.primary_ai_model);
+        if (p.speech_healing_enabled !== undefined) setAutoClipHealing(p.speech_healing_enabled);
+        if (p.important_words_enabled !== undefined) setAutoClipImpWords(p.important_words_enabled);
+        if (p.learning_loop_enabled !== undefined) setAutoClipLearning(p.learning_loop_enabled);
+        if (p.chunked_download_enabled !== undefined) setChunkedDownload(p.chunked_download_enabled);
+        if (p.chunk_window_seconds) setChunkDuration(String(p.chunk_window_seconds));
+        if (p.ai_voice_hook_enabled !== undefined) setAiVoiceHook(p.ai_voice_hook_enabled);
+        if (p.ai_voice_style) setAiVoiceStyle(p.ai_voice_style);
+        if (p.top_clips_only) setAutoClipMaxClips(String(p.top_clips_only));
+        if (p.local_only_mode !== undefined) setLocalOnlyMode(p.local_only_mode);
+        if (p.auto_publish_enabled !== undefined) setAutoPublishEnabled(p.auto_publish_enabled);
+      }
+      if (teleRes.status === "fulfilled" && teleRes.value.ok) {
+        setTelemetry(await teleRes.value.json());
+      }
+      if (autoRes.status === "fulfilled" && autoRes.value.ok) {
+        const a = await autoRes.value.json();
+        setAutopilotOverview(a);
+        setAutopilotRules(a.rules || []);
+      }
+      if (queueRes.status === "fulfilled" && queueRes.value.ok) {
+        const q = await queueRes.value.json();
+        setPublishingQueue(q.queue || []);
+      }
+      if (rightsRes.status === "fulfilled" && rightsRes.value.ok) {
+        const r = await rightsRes.value.json();
+        setSourceRights(r.rights || []);
+      }
+    } catch {}
+  }, []);
+
   useEffect(() => {
     if (session?.user?.id) {
       void loadSocialData();
+      void loadAutomationData();
     }
-  }, [session?.user?.id, loadSocialData]);
+  }, [session?.user?.id, loadSocialData, loadAutomationData]);
+
+  const handleTestModel = async () => {
+    setIsTestingModel(true);
+    try {
+      const res = await fetch("/api/models/test-connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_name: localModel }),
+      });
+      const data = await res.json();
+      if (data.connected) {
+        toast.success(`Model connection verified! Latency: ${data.latency_ms}ms`);
+      } else {
+        toast.error(data.error || "Model connection failed");
+      }
+    } catch {
+      toast.error("Failed to connect to model test endpoint");
+    } finally {
+      setIsTestingModel(false);
+    }
+  };
+
+  const handleToggleAutopilotRule = async (ruleId: string, currentEnabled: boolean) => {
+    try {
+      const res = await fetch(`/api/autopilot/rules/${ruleId}/toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !currentEnabled }),
+      });
+      if (res.ok) {
+        toast.success(!currentEnabled ? "Autopilot rule resumed" : "Autopilot rule paused");
+        void loadAutomationData();
+      }
+    } catch {
+      toast.error("Failed to toggle rule");
+    }
+  };
+
+  const handleRunAutopilotRule = async (ruleId: string) => {
+    toast.info("Triggering Autopilot discovery & rights verification...");
+    try {
+      const res = await fetch(`/api/autopilot/rules/${ruleId}/run`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(`Autopilot finished: ${data.sources_scanned} scanned, ${data.tasks_created} tasks queued`);
+        void loadAutomationData();
+      }
+    } catch {
+      toast.error("Failed to execute autopilot rule");
+    }
+  };
+
+  const handleCreateRule = async () => {
+    if (!newRuleName.trim()) {
+      toast.error("Please enter a rule name");
+      return;
+    }
+    try {
+      const res = await fetch("/api/autopilot/rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newRuleName.trim(),
+          niche: newRuleNiche,
+          min_trend_score: parseInt(newRuleScore, 10) || 70,
+          clip_count: parseInt(autoClipMaxClips, 10) || 3,
+        }),
+      });
+      if (res.ok) {
+        toast.success("Autopilot rule created!");
+        setCreateRuleOpen(false);
+        setNewRuleName("");
+        void loadAutomationData();
+      }
+    } catch {
+      toast.error("Failed to create rule");
+    }
+  };
+
+  const handleRegisterRights = async () => {
+    if (!rightsSourceId.trim()) {
+      toast.error("Please enter a source URL or channel ID");
+      return;
+    }
+    try {
+      const res = await fetch("/api/rights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_id: rightsSourceId.trim(),
+          platform: rightsPlatform,
+          rights_state: rightsState,
+          permission_source: "creator_agreement",
+        }),
+      });
+      if (res.ok) {
+        toast.success("Source rights successfully registered!");
+        setCreateRightsOpen(false);
+        setRightsSourceId("");
+        void loadAutomationData();
+      }
+    } catch {
+      toast.error("Failed to register rights");
+    }
+  };
+
+  const updateAutoClipSetting = async (key: string, val: string | number | boolean) => {
+    try {
+      const current = JSON.parse(localStorage.getItem("supoclip_autoclip_settings") || "{}");
+      current[key] = val;
+      localStorage.setItem("supoclip_autoclip_settings", JSON.stringify(current));
+    } catch {}
+
+    const payloadMap: Record<string, string> = {
+      localModel: "primary_ai_model",
+      speechHealing: "speech_healing_enabled",
+      impWords: "important_words_enabled",
+      learningLoop: "learning_loop_enabled",
+      chunkedDownload: "chunked_download_enabled",
+      chunkDuration: "chunk_window_seconds",
+      aiVoiceHook: "ai_voice_hook_enabled",
+      aiVoiceStyle: "ai_voice_style",
+      maxClips: "top_clips_only",
+      autoPublish: "auto_publish_enabled",
+      localOnly: "local_only_mode",
+    };
+    const backendKey = payloadMap[key] || key;
+    let backendVal = val;
+    if (backendKey === "chunk_window_seconds" || backendKey === "top_clips_only") {
+      backendVal = parseInt(String(val), 10) || 3;
+    }
+    try {
+      await fetch("/api/automation/preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [backendKey]: backendVal }),
+      });
+      toast.success("Preferences saved to account");
+    } catch {
+      toast.success("Settings saved locally");
+    }
+  };
 
   const handleDirectPost = async () => {
     if (!directPostCaption.trim()) {
@@ -755,31 +959,95 @@ export default function SettingsPage() {
                     <Bot className="size-4 text-primary" />
                     <span>Local AI Model Engine (Precision Editing & Viral Cues)</span>
                   </Label>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-                    <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    RTX 4050 GPU Active
+                  <span className={cn(
+                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
+                    telemetry?.gpu?.cuda_available
+                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                      : "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                  )}>
+                    <span className={cn(
+                      "size-1.5 rounded-full",
+                      telemetry?.gpu?.cuda_available ? "bg-emerald-500 animate-pulse" : "bg-blue-500"
+                    )} />
+                    {telemetry?.gpu?.cuda_available
+                      ? `${telemetry.gpu.gpus?.[0]?.name || "NVIDIA GPU"} Active`
+                      : telemetry?.cpu_cores
+                        ? `CPU Inference (${telemetry.cpu_cores} Cores)`
+                        : "AI Engine Ready"}
                   </span>
                 </div>
-                <Select
-                  value={localModel}
-                  onValueChange={(val) => {
-                    setLocalModel(val);
-                    updateAutoClipSetting("localModel", val);
-                  }}
-                >
-                  <SelectTrigger id="local-model-select" className="h-9 w-full text-xs">
-                    <SelectValue placeholder="Select Local Model" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ollama:qwen2.5:7b">Ollama: Qwen 2.5 7B (Recommended - RTX 4050 GPU Accelerated)</SelectItem>
-                    <SelectItem value="ollama:qwen3.5:4b">Ollama: Qwen 3.5 4B (Fastest Local Inference)</SelectItem>
-                    <SelectItem value="ollama:qwen3.5:9b">Ollama: Qwen 3.5 9B (High-Precision Reasoning)</SelectItem>
-                    <SelectItem value="ollama:glm-4.7-flash:latest">Ollama: GLM-4.7 Flash (Deep Context Model)</SelectItem>
-                  </SelectContent>
-                </Select>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <Select
+                      value={localModel}
+                      onValueChange={(val) => {
+                        setLocalModel(val);
+                        updateAutoClipSetting("localModel", val);
+                      }}
+                    >
+                      <SelectTrigger id="local-model-select" className="h-9 w-full text-xs">
+                        <SelectValue placeholder="Select Local Model" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ollama:qwen2.5:7b">Ollama: Qwen 2.5 7B (Recommended - High Accuracy)</SelectItem>
+                        <SelectItem value="ollama:qwen3.5:4b">Ollama: Qwen 3.5 4B (Fastest Local Inference)</SelectItem>
+                        <SelectItem value="ollama:qwen3.5:9b">Ollama: Qwen 3.5 9B (High-Precision Reasoning)</SelectItem>
+                        <SelectItem value="ollama:glm-4.7-flash:latest">Ollama: GLM-4.7 Flash (Deep Context Model)</SelectItem>
+                        <SelectItem value="openrouter:deepseek/deepseek-chat">OpenRouter: DeepSeek V3 (Cloud Fallback)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 text-xs gap-1.5 shrink-0"
+                    disabled={isTestingModel}
+                    onClick={handleTestModel}
+                  >
+                    <Activity className={cn("size-3.5", isTestingModel && "animate-spin")} />
+                    <span>{isTestingModel ? "Testing..." : "Test Connection"}</span>
+                  </Button>
+                </div>
                 <p className="text-[11px] text-muted-foreground">
-                  Zero token cost. Runs directly on your local GPU to tag high-retention moments, zoom cuts, sound effect beats, and generate punchy viral headlines.
+                  Runs directly on your hardware to tag high-retention moments, zoom cuts, sound effect beats, and generate punchy viral headlines.
                 </p>
+              </div>
+
+              {/* Local-Only Mode */}
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <Label htmlFor="local-only-toggle" className="flex-col items-start gap-0.5">
+                  <span className="text-sm font-medium">Local-Only / Offline Operation Mode</span>
+                  <span className="text-xs font-normal text-muted-foreground">
+                    Strictly block all external cloud model and analytics requests. AI analysis runs exclusively via local Ollama.
+                  </span>
+                </Label>
+                <Switch
+                  id="local-only-toggle"
+                  checked={localOnlyMode}
+                  onCheckedChange={(val) => {
+                    setLocalOnlyMode(val);
+                    updateAutoClipSetting("localOnly", val);
+                  }}
+                />
+              </div>
+
+              {/* Autonomous Multi-Platform Auto-Publishing */}
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <Label htmlFor="auto-publish-toggle" className="flex-col items-start gap-0.5">
+                  <span className="text-sm font-medium">Autonomous Multi-Platform Auto-Publishing</span>
+                  <span className="text-xs font-normal text-muted-foreground">
+                    When enabled, completed video clips are automatically distributed to connected YouTube, TikTok, and Instagram accounts without needing manual clicks.
+                  </span>
+                </Label>
+                <Switch
+                  id="auto-publish-toggle"
+                  checked={autoPublishEnabled}
+                  onCheckedChange={(val) => {
+                    setAutoPublishEnabled(val);
+                    updateAutoClipSetting("autoPublish", val);
+                  }}
+                />
               </div>
 
               {/* Chunked Streaming & Instant Pipelining */}
@@ -982,6 +1250,233 @@ export default function SettingsPage() {
           </div>
         </Section>
 
+        {/* Autopilot & Autonomous Discovery Hub */}
+        <Section
+          icon={<Compass className="size-4 text-purple-500" />}
+          title="Autopilot & Scheduled Discovery Hub"
+          description="Configure autonomous source discovery, rights verification, and background clipping rules"
+        >
+          <div className="space-y-4">
+            <div className="flex items-center justify-between pb-1 border-b">
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                  Active Autopilot Rules
+                </span>
+                {autopilotOverview && (
+                  <Badge variant="secondary" className="text-[10px]">
+                    {autopilotOverview.active_rules_count} / {autopilotOverview.total_rules} Active
+                  </Badge>
+                )}
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs gap-1"
+                onClick={() => setCreateRuleOpen(true)}
+              >
+                <span>+ Create Rule</span>
+              </Button>
+            </div>
+
+            {autopilotRules.length === 0 ? (
+              <div className="rounded-xl border border-dashed p-6 text-center space-y-2">
+                <Compass className="size-6 text-muted-foreground mx-auto" />
+                <p className="text-xs font-medium">No Autopilot rules active</p>
+                <p className="text-[11px] text-muted-foreground max-w-sm mx-auto">
+                  Create an autonomous rule to automatically discover breakout trending videos or creator feeds and clip them without manual intervention.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {autopilotRules.map((rule) => (
+                  <div
+                    key={rule.id}
+                    className="flex items-center justify-between rounded-xl border bg-card p-3.5 transition-colors hover:border-foreground/20"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-foreground">{rule.name}</span>
+                        <Badge variant="outline" className="text-[10px] uppercase">
+                          {rule.niche} ({rule.region})
+                        </Badge>
+                        <Badge variant="secondary" className="text-[10px]">
+                          Min Score: {rule.min_trend_score}
+                        </Badge>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Extracts {rule.clip_count} clips • Max {rule.daily_limit}/day • Schedule: {rule.schedule_cron}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 text-xs gap-1"
+                        onClick={() => handleRunAutopilotRule(rule.id)}
+                      >
+                        <Play className="size-3 text-emerald-500" />
+                        <span>Run Now</span>
+                      </Button>
+                      <Switch
+                        checked={rule.enabled}
+                        onCheckedChange={() => handleToggleAutopilotRule(rule.id, rule.enabled)}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Section>
+
+        {/* Source Rights & Creator Authorization */}
+        <Section
+          icon={<ShieldCheck className="size-4 text-emerald-500" />}
+          title="Source Rights & Creator Permissions"
+          description="Register authorized creator feeds, owned channels, and licensed content for verified auto-publishing"
+        >
+          <div className="space-y-4">
+            <div className="flex items-center justify-between pb-1 border-b">
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Authorized Media Sources
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs gap-1"
+                onClick={() => setCreateRightsOpen(true)}
+              >
+                <span>+ Register Channel</span>
+              </Button>
+            </div>
+
+            {sourceRights.length === 0 ? (
+              <div className="rounded-xl border border-dashed p-6 text-center space-y-2">
+                <ShieldCheck className="size-6 text-muted-foreground mx-auto" />
+                <p className="text-xs font-medium">No verified source permissions registered</p>
+                <p className="text-[11px] text-muted-foreground max-w-sm mx-auto">
+                  Public trending videos can be analyzed for personal use. To enable automated social redistribution and multi-platform publishing, register your owned channels or creator agreements here.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {sourceRights.map((r) => (
+                  <div
+                    key={r.id}
+                    className="flex items-center justify-between rounded-xl border bg-card p-3 transition-colors"
+                  >
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-foreground">{r.source_id}</span>
+                        <Badge variant="outline" className="text-[10px] capitalize">
+                          {r.platform}
+                        </Badge>
+                        <Badge
+                          variant="secondary"
+                          className={cn(
+                            "text-[10px] capitalize",
+                            r.rights_state === "owned" || r.rights_state === "creator_authorized"
+                              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                              : "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                          )}
+                        >
+                          {r.rights_state.replace("_", " ")}
+                        </Badge>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Permitted: {(r.permitted_operations || []).join(", ")}
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="text-[10px]">
+                      Verified
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Section>
+
+        {/* Publishing Outbox Queue */}
+        <Section
+          icon={<Clock className="size-4 text-blue-500" />}
+          title="Publishing Outbox Queue"
+          description="Live status of automated and scheduled video uploads across connected social platforms"
+        >
+          <div className="space-y-4">
+            <div className="flex items-center justify-between pb-1 border-b">
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Recent Publishing Jobs
+              </span>
+              <Badge variant="secondary" className="text-[10px]">
+                {publishingQueue.length} Tracked Posts
+              </Badge>
+            </div>
+
+            {publishingQueue.length === 0 ? (
+              <div className="rounded-xl border border-dashed p-6 text-center space-y-1">
+                <Clock className="size-6 text-muted-foreground mx-auto" />
+                <p className="text-xs font-medium">Publishing queue is empty</p>
+                <p className="text-[11px] text-muted-foreground">
+                  When auto-publishing or direct posting is triggered, jobs appear here with real platform status and direct post URLs.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {publishingQueue.slice(0, 10).map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between rounded-xl border bg-card p-3 transition-colors"
+                  >
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-foreground truncate max-w-[200px]">
+                          {item.title || "Viral Clip"}
+                        </span>
+                        <Badge variant="outline" className="text-[10px] uppercase">
+                          {item.provider}
+                        </Badge>
+                        <Badge
+                          variant="secondary"
+                          className={cn(
+                            "text-[10px] capitalize",
+                            item.status === "published"
+                              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                              : item.status === "failed"
+                                ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                                : "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                          )}
+                        >
+                          {item.status}
+                        </Badge>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Account: {item.account_name || "Connected"} • Created: {new Date(item.created_at).toLocaleDateString()}
+                      </p>
+                    </div>
+
+                    <div>
+                      {item.external_url ? (
+                        <Button variant="ghost" size="sm" asChild className="h-7 text-xs gap-1">
+                          <a href={item.external_url} target="_blank" rel="noopener noreferrer">
+                            <span>View Live</span>
+                            <ExternalLink className="size-3" />
+                          </a>
+                        </Button>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                          {item.status === "queued" ? "Waiting Dispatch" : item.status}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Section>
+
         {/* Multitasking & Worker Processing Engine */}
         <Section
           icon={<Cpu className="size-4 text-emerald-500" />}
@@ -997,11 +1492,11 @@ export default function SettingsPage() {
                     <span>Parallel Worker Pool</span>
                   </span>
                   <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-mono text-[10px]">
-                    3 Workers Active ⚡
+                    {telemetry?.cpu_cores ? `${telemetry.cpu_cores} Cores Active` : "Workers Active ⚡"}
                   </Badge>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  Up to 24 concurrent ARQ job slots executing video processing, AI transcript analysis, and FFmpeg encoding.
+                  {telemetry?.ram_available_gb ? `${telemetry.ram_available_gb} GB RAM available / ${telemetry.ram_total_gb} GB total.` : "Executing background video processing, transcript analysis, and FFmpeg encoding."}
                 </p>
               </div>
 
@@ -1009,14 +1504,16 @@ export default function SettingsPage() {
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                     <Zap className="size-3.5 text-amber-500" />
-                    <span>User Concurrency Limit</span>
+                    <span>Hardware Acceleration</span>
                   </span>
                   <Badge variant="secondary" className="font-mono text-[10px]">
-                    4 Simultaneous Tasks
+                    {telemetry?.gpu?.cuda_available ? (telemetry.gpu.gpus?.[0]?.name || "CUDA Ready") : "CPU Mode"}
                   </Badge>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  Clip up to 4 videos at the same time without queuing delays. Extra tasks queue automatically.
+                  {telemetry?.gpu?.cuda_available
+                    ? `GPU VRAM: ${telemetry.gpu.gpus?.[0]?.free_vram_mb ?? 0} MB free / ${telemetry.gpu.gpus?.[0]?.total_vram_mb ?? 0} MB.`
+                    : "Zero-dependency CPU inference pipeline with native FFmpeg multi-threading."}
                 </p>
               </div>
             </div>
@@ -1395,6 +1892,161 @@ export default function SettingsPage() {
             >
               {isPosting ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
               <span>Publish Now</span>
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Autopilot Rule Dialog */}
+      <Dialog open={createRuleOpen} onOpenChange={setCreateRuleOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Compass className="size-4 text-primary" />
+              <span>Create Autonomous Autopilot Rule</span>
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              SuperClip will automatically scan for new videos matching this rule, verify rights, and clip them.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3.5 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="rule-name-input" className="text-xs font-semibold">Rule Name</Label>
+              <Input
+                id="rule-name-input"
+                placeholder="e.g. Breakout Gaming Moments"
+                value={newRuleName}
+                onChange={(e) => setNewRuleName(e.target.value)}
+                className="h-8 text-xs"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="rule-niche-select" className="text-xs font-semibold">Niche</Label>
+                <Select value={newRuleNiche} onValueChange={setNewRuleNiche}>
+                  <SelectTrigger id="rule-niche-select" className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Niches</SelectItem>
+                    <SelectItem value="gaming">Gaming</SelectItem>
+                    <SelectItem value="podcasts">Podcasts</SelectItem>
+                    <SelectItem value="tech">Tech & AI</SelectItem>
+                    <SelectItem value="entertainment">Entertainment</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="rule-min-score" className="text-xs font-semibold">Min Virality Score</Label>
+                <Input
+                  id="rule-min-score"
+                  type="number"
+                  min="50"
+                  max="100"
+                  value={newRuleScore}
+                  onChange={(e) => setNewRuleScore(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCreateRuleOpen(false)}
+              className="h-8 text-xs"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleCreateRule}
+              className="h-8 text-xs bg-primary text-primary-foreground"
+            >
+              Save Rule
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Register Source Rights Dialog */}
+      <Dialog open={createRightsOpen} onOpenChange={setCreateRightsOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <ShieldCheck className="size-4 text-emerald-500" />
+              <span>Register Media Rights & Channel Permission</span>
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Authorize automated multi-platform distribution for your owned channels or creator agreements.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3.5 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="rights-source-input" className="text-xs font-semibold">Channel ID, URL or Handle</Label>
+              <Input
+                id="rights-source-input"
+                placeholder="e.g. UC_x5XG1OV2P6uZZ5FSM9Ttw or channel URL"
+                value={rightsSourceId}
+                onChange={(e) => setRightsSourceId(e.target.value)}
+                className="h-8 text-xs"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="rights-platform-select" className="text-xs font-semibold">Platform</Label>
+                <Select value={rightsPlatform} onValueChange={setRightsPlatform}>
+                  <SelectTrigger id="rights-platform-select" className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="youtube">YouTube</SelectItem>
+                    <SelectItem value="twitch">Twitch</SelectItem>
+                    <SelectItem value="tiktok">TikTok</SelectItem>
+                    <SelectItem value="kick">Kick</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="rights-state-select" className="text-xs font-semibold">Permission State</Label>
+                <Select value={rightsState} onValueChange={setRightsState}>
+                  <SelectTrigger id="rights-state-select" className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="owned">Owned Channel (100% Rights)</SelectItem>
+                    <SelectItem value="creator_authorized">Creator Authorized (Written Permission)</SelectItem>
+                    <SelectItem value="licensed">Commercial License</SelectItem>
+                    <SelectItem value="personal_analysis_only">Personal Analysis Only</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCreateRightsOpen(false)}
+              className="h-8 text-xs"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleRegisterRights}
+              className="h-8 text-xs bg-emerald-600 text-white hover:bg-emerald-700"
+            >
+              Verify & Register
             </Button>
           </div>
         </DialogContent>

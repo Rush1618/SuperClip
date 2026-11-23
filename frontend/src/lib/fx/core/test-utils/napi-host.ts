@@ -132,9 +132,11 @@ export interface NapiHostOptions {
 
 export interface NapiHost extends FxHost { measure(text: string, family: string, px: number): number }
 
+let sharedMeasureCtx: any = null;
+
 export function napiHost(options: NapiHostOptions = {}): NapiHost {
   registerFxFonts();
-  const measureCtx = createCanvas(8, 8).getContext("2d");
+  const measureCtx = sharedMeasureCtx || (sharedMeasureCtx = createCanvas(8, 8).getContext("2d"));
   const w = options.width ?? 1080, h = options.height ?? 1920;
   const picture = options.picture ?? ((ctx: FxContext2D, cutout: boolean) => drawTestPicture(ctx, w, h, cutout));
   const atlas = options.atlas === undefined ? loadTestAtlas() : options.atlas;

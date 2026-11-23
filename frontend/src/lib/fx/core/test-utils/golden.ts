@@ -83,10 +83,9 @@ export interface GoldenResult { name: string; diffRatio: number; written: boolea
 export function expectGolden(name: string, png: Buffer, options: { maxDiffRatio?: number; threshold?: number } = {}): GoldenResult {
   const file = join(GOLDEN_DIR, `${name}.png`);
   const actual = goldenImage(png);
-  const encoded = encodeGolden(actual);
   if (process.env.UPDATE_GOLDENS === "1") {
     mkdirSync(GOLDEN_DIR, { recursive: true });
-    writeFileSync(file, encoded);
+    writeFileSync(file, encodeGolden(actual));
     return { name, diffRatio: 0, written: true };
   }
   if (!existsSync(file)) throw new Error(`missing golden ${file}; run with UPDATE_GOLDENS=1 to create it`);
@@ -100,7 +99,7 @@ export function expectGolden(name: string, png: Buffer, options: { maxDiffRatio?
   if (ratio > (options.maxDiffRatio ?? 0.005)) {
     const dir = join(tmpdir(), "fx-golden");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `${name}.actual.png`), encoded);
+    writeFileSync(join(dir, `${name}.actual.png`), encodeGolden(actual));
     writeFileSync(join(dir, `${name}.diff.png`), PNG.sync.write(diff));
     throw new Error(`golden ${name}: ${(ratio * 100).toFixed(3)} % pixels differ (see ${dir})`);
   }

@@ -243,6 +243,10 @@ def create_app(
     from .api.routes.mcp_oauth import internal_router as mcp_oauth_internal_router
     from .api.routes.trending import router as trending_router
     from .api.routes.auto_upload import router as auto_upload_router
+    from .api.routes.rights import router as rights_router
+    from .api.routes.autopilot import router as autopilot_router
+    from .api.routes.automation import router as automation_router
+    from .api.routes.models import router as models_router
 
     app.include_router(media_router)
     app.include_router(feedback_router)
@@ -253,6 +257,10 @@ def create_app(
     app.include_router(social_router)
     app.include_router(trending_router)
     app.include_router(auto_upload_router)
+    app.include_router(rights_router)
+    app.include_router(autopilot_router)
+    app.include_router(automation_router)
+    app.include_router(models_router)
     app.include_router(email_preferences_router)
     app.include_router(feature_flags_router)
     app.include_router(fx_router)

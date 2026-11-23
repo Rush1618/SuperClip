@@ -48,6 +48,35 @@ def scheduled(coroutine, **kwargs):
     return cron(coroutine, name=name, job_id=name, unique=True, **kwargs)
 
 
+async def run_active_autopilot_rules(ctx):
+    """Scan and execute active autopilot rules on schedule."""
+    import logging
+    from ..database import AsyncSessionLocal
+    from ..services.autopilot_service import AutopilotService
+    from sqlalchemy import text
+    _logger = logging.getLogger("cron.autopilot")
+    try:
+        async with AsyncSessionLocal() as session:
+            rules = await session.execute(
+                text("SELECT id FROM autopilot_rules WHERE enabled = true")
+            )
+            rule_ids = [r[0] for r in rules.all()]
+            if not rule_ids:
+                return {"executed": 0}
+            service = AutopilotService(session)
+            results = []
+            for r_id in rule_ids:
+                try:
+                    res = await service.execute_rule(r_id)
+                    results.append(res)
+                except Exception as err:
+                    _logger.warning("Error running autopilot rule %s: %s", r_id, err)
+            return {"executed": len(results), "results": results}
+    except Exception as exc:
+        _logger.error("Failed to run active autopilot rules: %s", exc)
+        return {"error": str(exc)}
+
+
 class CronWorkerSettings:
     config = Config()
     functions = []
@@ -76,4 +105,6 @@ class CronWorkerSettings:
         scheduled(deliver_feedback_webhooks, second=50, timeout=600),
         # Autonomous viral pattern learning agent: runs hourly to analyze breakout video patterns
         scheduled(learn_from_trending_videos, minute=0, second=15, timeout=600),
+        # Autonomous Autopilot discovery and clipping: runs on schedule
+        scheduled(run_active_autopilot_rules, minute={0, 30}, second=45, timeout=600),
     ]

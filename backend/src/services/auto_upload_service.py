@@ -2,15 +2,19 @@
 Autonomous Multi-Platform Social Upload & Publishing Service.
 
 Automatically pushes rendered viral clips to connected user platforms
-(YouTube Shorts, TikTok, Instagram Reels, Twitter/X) in auto-clipping mode.
+(YouTube Shorts, TikTok, Instagram Reels) in auto-clipping mode.
+Enforces rights checks, outbox idempotency, and transactional intent tracking.
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .rights_service import RightsService
 from .social_service import SocialService
 from .trending_service import get_learning_memory
 from ..config import Config, get_config
@@ -37,6 +41,7 @@ class AutoUploadService:
             config=self.config,
             queue_adapter=self.queue_adapter,
         )
+        self.rights_service = RightsService(self.db)
 
     async def get_auto_upload_overview(self, user_id: str, team_id: Optional[str] = None) -> Dict[str, Any]:
         """Check active platforms, account connections, and auto-upload readiness."""
@@ -74,11 +79,40 @@ class AutoUploadService:
     ) -> Dict[str, Any]:
         """
         Automatically upload and publish a specific clip across all (or selected) connected platforms.
-        Generates platform-tailored viral hooks, tags, and titles using learned viral patterns.
+        Verifies source rights, records transactional publishing intents with idempotency,
+        and generates platform-tailored viral hooks and captions.
         """
         clip = await ClipRepository.get_clip_by_id(self.db, clip_id)
         if not clip:
             return {"status": "error", "message": f"Clip {clip_id} not found", "posts": []}
+
+        # Verify source rights before distributing
+        from ..repositories.task_repository import TaskRepository
+        task = await TaskRepository.get_task_by_id(self.db, task_id)
+        source_id = task.get("source_id") or task_id if task else task_id
+        source_platform = task.get("source_type") or "youtube" if task else "youtube"
+
+        rights_check = await self.rights_service.check_rights_permission(
+            source_id=source_id,
+            platform=source_platform,
+            operation="publish",
+            user_id=user_id,
+            team_id=team_id,
+        )
+        if not rights_check["allowed"]:
+            logger.warning(
+                "Auto-upload blocked for clip %s (task %s): %s",
+                clip_id,
+                task_id,
+                rights_check["reason"],
+            )
+            return {
+                "status": "blocked_by_rights",
+                "message": rights_check["reason"],
+                "rights_state": rights_check.get("rights_state"),
+                "clip_id": clip_id,
+                "posts": [],
+            }
 
         accounts = await self.social_service.list_connections(user_id, team_id=team_id)
         valid_accounts = [
@@ -120,6 +154,26 @@ class AutoUploadService:
 
         for acc in target_accounts:
             provider = acc["provider"]
+            idempotency_key = f"{clip_id}:{acc['id']}:{task_id}"
+
+            # Check if intent already exists in outbox
+            existing_intent = await self.db.execute(
+                text("SELECT id, status, external_post_id, external_url FROM publishing_intents WHERE idempotency_key = :k"),
+                {"k": idempotency_key},
+            )
+            row = existing_intent.mappings().first()
+            if row:
+                logger.info("Publishing intent already exists for clip %s to %s (status: %s)", clip_id, provider, row["status"])
+                created_posts.append({
+                    "post_id": row["id"],
+                    "provider": provider,
+                    "account_name": acc.get("account_name") or acc.get("username"),
+                    "status": row["status"],
+                    "external_url": row.get("external_url"),
+                    "title": clip.get("title", "Clip"),
+                })
+                continue
+
             try:
                 # 1. Generate optimized caption & title for platform
                 draft_caption = ""
@@ -144,7 +198,41 @@ class AutoUploadService:
                     logger.debug("Automatic caption draft error on %s, using fallback: %s", provider, cap_err)
                     draft_caption = f"{draft_title}\n\n{' '.join(hashtags)}"
 
-                # 2. Create the post record and queue it for publishing
+                # 2. Record transactional publishing intent in PostgreSQL
+                intent_id = str(uuid4())
+                await self.db.execute(
+                    text(
+                        """
+                        INSERT INTO publishing_intents (
+                            id, user_id, team_id, task_id, clip_id, social_account_id,
+                            provider, idempotency_key, status, title, caption, hashtags,
+                            privacy_level, created_at, updated_at
+                        ) VALUES (
+                            :id, :user_id, :team_id, :task_id, :clip_id, :social_account_id,
+                            :provider, :idempotency_key, 'pending', :title, :caption, :hashtags,
+                            :privacy_level, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        ON CONFLICT (idempotency_key) DO NOTHING
+                        """
+                    ),
+                    {
+                        "id": intent_id,
+                        "user_id": user_id,
+                        "team_id": team_id,
+                        "task_id": task_id,
+                        "clip_id": clip_id,
+                        "social_account_id": acc["id"],
+                        "provider": provider,
+                        "idempotency_key": idempotency_key,
+                        "title": draft_title,
+                        "caption": draft_caption,
+                        "hashtags": hashtags,
+                        "privacy_level": privacy_level,
+                    },
+                )
+                await self.db.commit()
+
+                # 3. Create the post record and queue it for publishing
                 post = await self.social_service.create_post(
                     user_id,
                     task_id=task_id,
@@ -157,8 +245,17 @@ class AutoUploadService:
                     scheduled_for=None,  # Immediate publication
                     team_id=team_id,
                 )
+
+                # Update publishing_intent status to queued
+                await self.db.execute(
+                    text("UPDATE publishing_intents SET status = 'queued', updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
+                    {"id": intent_id},
+                )
+                await self.db.commit()
+
                 created_posts.append({
                     "post_id": post["id"],
+                    "intent_id": intent_id,
                     "provider": provider,
                     "account_name": acc.get("account_name") or acc.get("username"),
                     "status": post.get("status", "queued"),
@@ -222,6 +319,29 @@ class AutoUploadService:
             "results": results,
         }
 
+    async def list_publishing_queue(
+        self,
+        user_id: str,
+        team_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """List active and recent items in the publishing queue."""
+        query = text(
+            """
+            SELECT i.id, i.task_id, i.clip_id, i.provider, i.status, i.title,
+                   i.caption, i.privacy_level, i.attempts, i.external_post_id,
+                   i.external_url, i.last_error, i.created_at, i.published_at,
+                   a.display_name AS account_name, a.avatar_url AS account_avatar
+            FROM publishing_intents i
+            LEFT JOIN social_accounts a ON i.social_account_id = a.id
+            WHERE i.user_id = :user_id OR (:team_id IS NOT NULL AND i.team_id = :team_id)
+            ORDER BY i.created_at DESC
+            LIMIT :limit
+            """
+        )
+        res = await self.db.execute(query, {"user_id": user_id, "team_id": team_id, "limit": limit})
+        return [dict(r) for r in res.mappings().all()]
+
 
 async def maybe_trigger_auto_upload(
     task_id: str,
@@ -229,9 +349,9 @@ async def maybe_trigger_auto_upload(
     db: Optional[AsyncSession] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Check if a completed task has auto-upload enabled in its workflow_settings
-    or create_settings. If enabled, automatically uploads generated clips to
-    connected platforms.
+    Check if a completed task has auto-upload enabled in its workflow_settings,
+    create_settings, or user persistent automation preferences.
+    If enabled, automatically uploads generated clips to connected platforms.
     """
     from ..repositories.task_repository import TaskRepository
 
@@ -244,7 +364,7 @@ async def maybe_trigger_auto_upload(
             logger.debug("Database session unavailable for auto-upload trigger: %s", exc)
             return None
 
-    task = await TaskRepository.get_task(db, task_id)
+    task = await TaskRepository.get_task_by_id(db, task_id)
     if not task:
         return None
 
@@ -253,14 +373,24 @@ async def maybe_trigger_auto_upload(
     auto_upload_enabled = bool(
         workflow_settings.get("auto_upload") or settings.get("auto_upload")
     )
+
+    # Check user/workspace persistent automation preferences if not explicitly set on task
+    top_n = None
+    if not auto_upload_enabled:
+        from .automation_service import AutomationService
+        pref = await AutomationService(db).get_preferences(user_id, team_id=task.get("team_id"))
+        if pref and pref.get("auto_publish_enabled"):
+            auto_upload_enabled = True
+            top_n = pref.get("top_clips_only")
+
     if not auto_upload_enabled:
         return None
 
-    logger.info(f"Task {task_id} has auto_upload enabled; triggering autonomous social upload.")
+    logger.info("Task %s has auto_upload enabled; triggering autonomous social upload.", task_id)
     service = AutoUploadService(db)
     return await service.auto_upload_task_clips(
         user_id=user_id,
         task_id=task_id,
         team_id=task.get("team_id"),
+        top_clips_only=top_n,
     )
-

@@ -212,7 +212,7 @@ async def monitor_live_stream_endpoint(
     """Analyze a live stream (YouTube or Twitch) for peak hype moments and chat spikes."""
     url = validate_safe_streaming_url(payload.url)
     await check_redis_rate_limit(auth.user_id, "live_monitor", max_requests=25, window_seconds=60)
-    return analyze_stream_hype_moments(url, channel_hint=payload.channel)
+    return analyze_stream_hype_moments(url, channel_hint=payload.channel, user_id=auth.user_id)
 
 
 @router.post("/check-transcription")

@@ -609,11 +609,21 @@ def _uses_native_output(model_name: str) -> bool:
     )
 
 
+def _is_local_only_mode() -> bool:
+    import os
+    return os.getenv("LOCAL_ONLY_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _build_transcript_model(
     runtime_config: Config, model_name: str | None = None
 ) -> Model | str:
     model_name = model_name or runtime_config.llm
     provider, provider_model_name = _split_llm_name(model_name)
+    if _is_local_only_mode() and provider != "ollama":
+        raise RuntimeError(
+            f"Local-only mode is active: external cloud LLM calls to '{provider}' are strictly blocked. "
+            "Please switch to a local Ollama model (e.g. ollama:llama3) or disable Local-Only mode in Settings."
+        )
     if provider == "anthropic" and _uses_native_output(model_name):
         # The installed SDK predates Sonnet 5.5 and Haiku 5.5. Sonnet 5.5 rejects
         # forced tool calls; both need native structured output.

@@ -69,6 +69,18 @@ async def auto_upload_clip_endpoint(
     )
 
 
+@router.get("/queue")
+async def get_publishing_queue(
+    limit: int = 50,
+    auth: AuthContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve publishing outbox queue items with status, provider, and external links."""
+    service = AutoUploadService(db, get_config())
+    items = await service.list_publishing_queue(auth.user_id, team_id=auth.team_id, limit=limit)
+    return {"queue": items, "count": len(items)}
+
+
 @router.post("/task")
 async def auto_upload_task_endpoint(
     payload: AutoUploadTaskRequest,
