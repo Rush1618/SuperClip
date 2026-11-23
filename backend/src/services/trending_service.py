@@ -224,9 +224,9 @@ def is_within_24_hours(published_text: str) -> bool:
     if re.search(r"\d+\s*(?:m|min|minutes?)\s*ago", p):
         return True
 
-    # Check seconds: "30s ago", "few seconds ago", "just now", "moments ago"
+    # Check seconds / recent indicators: "30s ago", "few seconds ago", "just now", "moments ago", "recent"
     if re.search(r"\d+\s*(?:s|sec|seconds?)\s*ago", p) or any(
-        w in p for w in ["just now", "moments ago", "few seconds"]
+        w in p for w in ["just now", "moments ago", "few seconds", "recent"]
     ):
         return True
 

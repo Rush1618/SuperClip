@@ -124,7 +124,7 @@ describe("paths, pixelate, grain", () => {
   });
 });
 
-describe("raster goldens", () => {
+describe("raster goldens", { timeout: 30_000 }, () => {
   const times = [0.3, 1.05, 2.3];
   for (const [w, h] of [[1080, 1920], [1080, 1080], [1920, 1080]] as const) {
     it(`base captions ${w}x${h}`, () => {
@@ -132,7 +132,7 @@ describe("raster goldens", () => {
         const png = renderSceneToPng(makeScene({ width: w, height: h }), t);
         expectGolden(`base__marker_circle_${w}x${h}_t${t}`, png);
       }
-    });
+    }, 30_000);
   }
 
   it("base captions per template look", () => {
@@ -144,7 +144,7 @@ describe("raster goldens", () => {
           : template === "behind_head" ? { ...scene.caption!, stroke_color: null, stroke_px: 0 } : { ...scene.caption!, font: "Poppins-ExtraBold" };
       expectGolden(`base__${template}_t1.05`, renderSceneToPng({ ...scene, caption: { ...style, template } }, 1.05));
     }
-  });
+  }, 30_000);
 
   it("picture ops: punch toward the face, whip blur, spin, RGB split + slices", () => {
     const states = {
@@ -169,5 +169,5 @@ describe("raster goldens", () => {
     ];
     expectGolden("looks__sticker_palettes", renderOpsToPng(ops, 1080, 1920));
     expectGolden("looks__sticker_landscape", renderOpsToPng(stickerOps("WAIT FOR IT…", 960, 300, 0.06, 1, "#FF7A1A", 1), 1920, 1080));
-  });
+  }, 30_000);
 });

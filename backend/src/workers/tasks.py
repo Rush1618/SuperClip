@@ -260,6 +260,13 @@ async def dispatch_scheduled_social_posts(ctx: Dict[str, Any]) -> Dict[str, Any]
         resolved = await service.resolve_pending_posts()
         # Covers workers that crashed or were cancelled mid-upload.
         swept = await service.sweep_stale_publishing()
+
+        # Check and process due autonomous autopilot discovery rules
+        try:
+            from ..services.autopilot_service import AutopilotService
+            await AutopilotService.execute_due_rules(db)
+        except Exception as e:
+            logger.debug("Autopilot due rules pass: %s", e)
     return {
         "dispatched": len(dispatched),
         "pending_checked": resolved,

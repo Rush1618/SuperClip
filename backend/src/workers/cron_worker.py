@@ -103,8 +103,4 @@ class CronWorkerSettings:
         scheduled(process_cancellation_reviews, second=30, timeout=1800),
         # Retries feedback webhook deliveries the API's first attempt didn't send.
         scheduled(deliver_feedback_webhooks, second=50, timeout=600),
-        # Autonomous viral pattern learning agent: runs hourly to analyze breakout video patterns
-        scheduled(learn_from_trending_videos, minute=0, second=15, timeout=600),
-        # Autonomous Autopilot discovery and clipping: runs on schedule
-        scheduled(run_active_autopilot_rules, minute={0, 30}, second=45, timeout=600),
     ]

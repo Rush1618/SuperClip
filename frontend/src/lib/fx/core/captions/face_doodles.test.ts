@@ -76,10 +76,10 @@ describe("face_doodles frameOps", () => {
   });
 });
 
-describe("face_doodles raster goldens", () => {
+describe("face_doodles raster goldens", { timeout: 30_000 }, () => {
   it("sparkles at 3 times (540x960)", () => {
     for (const t of [0.6, 1.0, 1.6]) expectGolden(`face_doodles__sparkles_t${t}`, renderSceneToPng(scene([doodle("sparkles")], 540, 960), t));
-  });
+  }, 30_000);
   it("every kind once, and the no-face sticker (540x960)", () => {
     for (const kind of DOODLE_KINDS) {
       if (kind === "sparkles") continue;

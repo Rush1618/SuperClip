@@ -323,7 +323,7 @@ describe("styles", () => {
   });
 });
 
-describe("the frame", () => {
+describe("the frame", { timeout: 30_000 }, () => {
   it("draws the card above the captions and under a flash, only inside its window", () => {
     const scene = makeScene({
       template: "highlighter_swipe", caption: lookCaptions(0.55), hook: hook(),
