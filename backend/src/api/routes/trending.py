@@ -4,10 +4,14 @@ Trending USA Video Discovery, Live Stream Hype Monitor & Autonomous Clipping API
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
+import time
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +38,73 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/trending", tags=["trending"])
 
 
+def validate_safe_streaming_url(url: str) -> str:
+    """Enforce strict SSRF protection: reject loopback, link-local, and private targets."""
+    url = (url or "").strip()
+    if not url:
+        raise HTTPException(status_code=422, detail="URL cannot be empty")
+    if len(url) > 2048:
+        raise HTTPException(status_code=422, detail="URL exceeds maximum length of 2048 characters")
+    try:
+        parts = urlsplit(url)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid URL structure: {exc}")
+
+    if parts.scheme.lower() not in {"http", "https"}:
+        raise HTTPException(status_code=422, detail="URL must use http or https scheme")
+
+    host = (parts.hostname or "").lower().rstrip(".")
+    if not host:
+        raise HTTPException(status_code=422, detail="URL missing hostname")
+
+    blocked_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "metadata.google.internal"}
+    if host in blocked_hosts or any(host.endswith(sfx) for sfx in (".localhost", ".local", ".internal", ".lan")):
+        raise HTTPException(status_code=422, detail=f"Access to private/internal host '{host}' is prohibited")
+
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+        if not ip.is_global:
+            raise HTTPException(status_code=422, detail=f"Access to non-public IP '{host}' is prohibited")
+    except ValueError:
+        pass
+
+    return url
+
+
+async def check_redis_rate_limit(
+    identifier: str, bucket: str, max_requests: int = 15, window_seconds: int = 60
+) -> None:
+    """Distributed Redis sliding token bucket rate limiter."""
+    config = get_config()
+    try:
+        client = aioredis.Redis(
+            host=config.redis_host,
+            port=config.redis_port,
+            password=config.redis_password,
+            socket_connect_timeout=1.5,
+        )
+        try:
+            now = int(time.time())
+            window_start = now - (now % window_seconds)
+            key = f"rate_limit:trending:{bucket}:{identifier}:{window_start}"
+            count = await client.incr(key)
+            if count == 1:
+                await client.expire(key, window_seconds)
+            if count > max_requests:
+                retry_after = window_start + window_seconds - now
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Rate limit exceeded for {bucket}. Please try again in {retry_after}s.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+        finally:
+            await client.aclose()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.debug("Redis rate limiting skipped: %s", exc)
+
+
 class LiveMonitorRequest(BaseModel):
     url: str = Field(..., min_length=1, max_length=2048, description="URL of live stream or video to monitor")
     channel: Optional[str] = Field(None, max_length=256, description="Optional channel or streamer name")
@@ -43,6 +114,12 @@ class TranscriptionCheckRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=100000, description="Transcription text to analyze and heal")
     channel: Optional[str] = Field(None, max_length=256, description="Channel or speaker context")
     context: Optional[str] = Field(None, max_length=1024, description="Additional context or topic")
+
+
+class AutoClipRequest(BaseModel):
+    source: Dict[str, Any] = Field(..., description="Source details including url and title")
+    options: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Clipping workflow options")
+    auto_upload: Optional[bool] = Field(False, description="Enable autonomous upload to connected accounts")
 
 
 async def require_auth(
@@ -98,6 +175,7 @@ async def force_refresh_trending(
     auth: AuthContext = Depends(require_auth),
 ):
     """Force an immediate refresh by querying live YouTube feeds and updating the feed."""
+    await check_redis_rate_limit(auth.user_id, "refresh", max_requests=6, window_seconds=60)
     clear_trending_cache()
     videos = fetch_all_trending(platform=platform, region=region, niche=niche, timeframe=timeframe, limit=limit, force_refresh=True)
     return {"message": "Refreshed live YouTube trending feed", "videos": videos, "total": len(videos)}
@@ -117,6 +195,7 @@ async def trigger_learning_pass(
     auth: AuthContext = Depends(require_auth),
 ):
     """Trigger an immediate autonomous learning pass from current trending videos."""
+    await check_redis_rate_limit(auth.user_id, "learn_now", max_requests=3, window_seconds=60)
     memory = await learn_from_trending_videos()
     return {
         "message": "Learning cycle completed successfully",
@@ -131,9 +210,8 @@ async def monitor_live_stream_endpoint(
     auth: AuthContext = Depends(require_auth),
 ):
     """Analyze a live stream (YouTube or Twitch) for peak hype moments and chat spikes."""
-    url = payload.url.strip()
-    if not url:
-        raise HTTPException(status_code=422, detail="Missing or invalid live stream URL")
+    url = validate_safe_streaming_url(payload.url)
+    await check_redis_rate_limit(auth.user_id, "live_monitor", max_requests=25, window_seconds=60)
     return analyze_stream_hype_moments(url, channel_hint=payload.channel)
 
 
@@ -149,12 +227,14 @@ async def check_transcription_endpoint(
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=422, detail="Missing or empty transcription text")
+    await check_redis_rate_limit(auth.user_id, "check_transcription", max_requests=30, window_seconds=60)
     return await check_and_heal_transcript(text, channel=payload.channel or "", context=payload.context or "")
 
 
 @router.post("/autoclip")
 async def autoclip_endpoint(
     request: Request,
+    payload: AutoClipRequest,
     db: AsyncSession = Depends(get_db),
     auth: AuthContext = Depends(require_auth),
 ):
@@ -164,24 +244,32 @@ async def autoclip_endpoint(
     """
     from .tasks import SourceAttempt, _create_task
 
-    try:
-        body_dict = await request.json()
-    except Exception:
-        raise HTTPException(status_code=422, detail="Invalid JSON body")
+    await check_redis_rate_limit(auth.user_id, "autoclip", max_requests=10, window_seconds=60)
 
-    raw_source = body_dict.get("source") or {}
+    raw_source = payload.source
     orig_url = str(raw_source.get("url") or "").strip()
     if orig_url:
+        orig_url = validate_safe_streaming_url(orig_url)
         try:
             playable = resolve_playable_stream_url(orig_url, channel=raw_source.get("title") or "")
             if playable != orig_url:
                 raw_source["url"] = playable
-                body_dict["source"] = raw_source
         except ValueError as err:
             raise HTTPException(
                 status_code=422,
                 detail=f"STREAM_NOT_PLAYABLE: {str(err)}",
             )
+
+    body_dict = {
+        "source": raw_source,
+        "options": payload.options or {},
+    }
+    if payload.auto_upload:
+        opts = body_dict["options"]
+        adv = opts.get("advanced") or {}
+        adv["auto_upload"] = True
+        opts["advanced"] = adv
+        body_dict["options"] = opts
 
     new_bytes = json.dumps(body_dict).encode("utf-8")
     request._body = new_bytes
