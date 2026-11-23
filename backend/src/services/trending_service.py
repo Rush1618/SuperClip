@@ -4,8 +4,8 @@ Trending Worldwide Video Discovery, Niche Filtering & Continuous Viral Learning 
 Fetches top trending videos across YouTube and Twitch filtered by Region/Country and
 Content Niche (Gaming, Podcasts, Tech, Entertainment, Education, IRL, etc.), explicitly
 filtering out generic copyright music tracks so clippers get high-converting content.
-Runs a continuous autonomous background learning loop using local Ollama (qwen2.5:7b)
-to extract viral hook structures, high-CTR title formulas, and retention triggers.
+Runs an autonomous learning pass via ARQ cron worker to extract viral hook structures,
+high-CTR title formulas, and retention triggers persisted in PostgreSQL.
 """
 
 from __future__ import annotations
@@ -22,8 +22,13 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from ..repositories.viral_learning_repository import (
+    DEFAULT_VIRAL_MEMORY,
+    ViralLearningRepository,
+    _MEMORY_CACHE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +48,6 @@ YOUTUBE_CATEGORY_MAP: Dict[str, str] = {
 _TRENDING_CACHE: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
 CACHE_TTL_SECONDS = 300  # 5 minutes cache
 MAX_CACHE_ENTRIES = 50  # Prevent unbounded memory growth
-
-LEARNING_MEMORY_FILE = Path("/tmp/viral_learning_memory.json")
-if not LEARNING_MEMORY_FILE.parent.exists():
-    try:
-        LEARNING_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
 
 REGIONS: Dict[str, tuple[str, str]] = {
     "US": ("United States", "🇺🇸"),
@@ -106,122 +104,25 @@ NICHE_CHANNEL_FEEDS: Dict[str, List[tuple[str, str]]] = {
     ],
 }
 
-# Authentic, 100% verified working YouTube video pools per niche with matching IDs & titles
-NICHE_VIDEO_POOLS: Dict[str, List[tuple]] = {
-    "tech": [
-        ("KTDJiVpSDTI", "Can You Trust MKBHD?", "Marques Brownlee", "2.4M views", "1 hour ago", "16:45", 98),
-        ("hdMszZ2ah5Q", "Macbook PROLED Review: It's Not About That", "Marques Brownlee", "1.8M views", "3 hours ago", "14:12", 96),
-        ("rMaMe32qQkA", "If you've deployed anything since 2015, I have bad news...", "Fireship", "1.9M views", "2 hours ago", "06:45", 98),
-        ("Qxor6jpfSiU", "The only software that didn't break this week...", "Fireship", "1.2M views", "5 hours ago", "05:50", 97),
-        ("1OnMQNXozE8", "How to Start 3D Printing", "Linus Tech Tips", "1.1M views", "4 hours ago", "22:15", 95),
-        ("PptRrzYY61w", "The NVIDIA Scandal Goes Deeper than You Think", "ColdFusion", "1.6M views", "8 hours ago", "19:40", 96),
-    ],
-    "gaming": [
-        ("j6rVn529Hi4", "Wardens of Avalon - Exploration and Gameplay", "IGN", "340K views", "2 hours ago", "08:15", 98),
-        ("ljEukoe7IyY", "Astrider - Official Demo Launch Trailer", "IGN", "280K views", "4 hours ago", "03:40", 96),
-        ("YM1f69J8MYM", "GTA 6 on PS5 Pro vs Xbox Series S", "Linus Tech Tips", "1.4M views", "6 hours ago", "18:20", 97),
-        ("bHIhgxav9LY", "Grand Theft Auto VI Trailer 1 - Vice City Reveal", "Rockstar Games", "185M views", "8 hours ago", "01:31", 99),
-    ],
-    "podcasts": [
-        ("OXdGzv7aLh8", "Joe Rogan Experience #2584 - Mike Baker", "PowerfulJRE", "3.1M views", "2 hours ago", "2:45:10", 99),
-        ("ZHjNWVhHdJ8", "Joe Rogan Experience #2583 - Bob Gymlan", "PowerfulJRE", "2.4M views", "5 hours ago", "2:15:30", 97),
-        ("u2YxtyIKff0", "\"I WORRY ABOUT WHAT'S COMING...\" - DOAC", "The Diary Of A CEO", "1.8M views", "3 hours ago", "1:35:15", 98),
-        ("eocM1C3HfQg", "Senator Bernie Sanders on DOAC", "The Diary Of A CEO", "2.1M views", "7 hours ago", "1:48:20", 96),
-    ],
-    "entertainment": [
-        ("dnbLdUyozKM", "Closest To 50 Pounds Wins A Car", "MrBeast", "42M views", "2 hours ago", "14:20", 99),
-        ("WjCH5JUNzao", "Can I Beat Magnus Carlsen in Chess?", "MrBeast", "68M views", "5 hours ago", "18:45", 98),
-        ("VmqwfEw4UoU", "I Stayed in Waterpark Hotels", "Ryan Trahan", "8.4M views", "3 hours ago", "21:30", 97),
-        ("vroqHuGePJg", "Halloween Prank Gone Wild", "Ryan Trahan", "6.2M views", "6 hours ago", "15:40", 96),
-    ],
-    "education": [
-        ("HZjRoKgDnow", "Does adding helium reduce a balloon's mass?", "Veritasium", "2.4M views", "2 hours ago", "14:30", 98),
-        ("uXuQF_PPg5U", "Randomness is a lie. Let me explain", "Veritasium", "3.8M views", "6 hours ago", "18:20", 97),
-        ("39Hc0MZtE4w", "How Many People Can You Feed with a Dollar?", "Kurzgesagt – In a Nutshell", "3.2M views", "4 hours ago", "11:50", 98),
-        ("NKeZ_HRk_O8", "Cool Down Your Room... With a FRIDGE?", "Kurzgesagt – In a Nutshell", "2.9M views", "7 hours ago", "10:45", 96),
-        ("Y0-xv7bNVvU", "This One AI Prompt Will Organise Your Entire Life", "Ali Abdaal", "1.4M views", "3 hours ago", "18:22", 97),
-        ("L9GHmwO4-uw", "If You Have a Job, Start Selling Your Skills ASAP", "Ali Abdaal", "1.1M views", "8 hours ago", "16:15", 95),
-    ],
-    "irl": [
-        ("EBzZTSPnzRM", "I Spent 100 Hours In The Wilderness", "MrBeast", "96M views", "3 hours ago", "16:30", 98),
-        ("2pZ4DTeIrak", "Tech Russian Roulette with Tech Acronyms!", "Linus Tech Tips", "1.5M views", "5 hours ago", "12:40", 96),
-    ],
-    "music": [
-        ("dQw4w9WgXcQ", "Rick Astley - Never Gonna Give You Up (Official Music Video)", "Rick Astley", "1.5B views", "1 hour ago", "03:32", 92),
-    ],
-}
-
-DEFAULT_VIRAL_MEMORY = {
-    "version": "1.0",
-    "last_learned_at": datetime.now(timezone.utc).isoformat(),
-    "total_cycles": 1,
-    "total_videos_analyzed": 20,
-    "learned_hooks": [
-        "Curiosity gap: 'I never expected this to happen when...'",
-        "Pattern interrupt: 'Stop scrolling if you care about...'",
-        "Contrarian claim: 'Everyone thinks X, but the truth is completely different.'",
-        "Immediate payoff: 'Here is the exact reason why this changed everything.'",
-        "High-stakes storytelling: 'In the next 30 seconds, I'll show you how...'",
-    ],
-    "title_formulas": [
-        "I Tried [X] So You Don't Have To",
-        "The Real Truth About [Topic]",
-        "Why Nobody Is Talking About [X]",
-        "Don't Do [X] Until You Watch This",
-        "How [Person/Topic] Actually Happened",
-    ],
-    "retention_triggers": [
-        "Wait till you see what happened next...",
-        "I honestly couldn't believe this part.",
-        "Drop your thoughts in the comments 👇",
-        "If you've been in this situation, let me know below.",
-    ],
-    "trending_hashtags": [
-        "#fyp", "#shorts", "#viral", "#trending", "#youtube",
-        "#creator", "#mindblown", "#storytime", "#facts"
-    ],
-    "virality_boost_rules": "Score higher for clips opening with an energetic claim, direct question, or high-stakes reveal.",
-    "average_score_boost_pct": 18,
-    "status": "active_continuous_learning",
-}
-
-
-def _get_learning_memory_path() -> Path:
-    """Return persistent path for learned viral pattern memory."""
-    try:
-        from ..config import get_config
-        cfg = get_config()
-        base = Path(cfg.temp_dir).resolve().parent
-        return base / "viral_learning_memory.json"
-    except Exception:
-        return Path("/app/uploads/viral_learning_memory.json")
-
 
 def get_learning_memory() -> Dict[str, Any]:
-    """Retrieve the persistent viral learning memory."""
-    path = _get_learning_memory_path()
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict) and "learned_hooks" in data:
-                    return data
-        except Exception as e:
-            logger.warning("Could not read viral learning memory: %s", e)
-    return dict(DEFAULT_VIRAL_MEMORY)
+    """Retrieve the current viral learning memory from in-memory cache / PostgreSQL."""
+    return dict(_MEMORY_CACHE)
+
+
+async def get_learning_memory_async() -> Dict[str, Any]:
+    """Retrieve the persistent viral learning memory from PostgreSQL asynchronously."""
+    return await ViralLearningRepository.get_latest_memory()
 
 
 def save_learning_memory(memory: Dict[str, Any]) -> None:
-    """Save updated viral patterns atomically to persistent disk."""
-    path = _get_learning_memory_path()
+    """Save updated viral patterns to cache and schedule persistence to PostgreSQL."""
+    _MEMORY_CACHE.update(memory)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(memory, f, indent=2, ensure_ascii=False)
-        tmp_path.replace(path)
-    except Exception as e:
-        logger.warning("Could not save viral learning memory: %s", e)
+        loop = asyncio.get_running_loop()
+        loop.create_task(ViralLearningRepository.save_memory(memory))
+    except RuntimeError:
+        pass
 
 
 def get_learned_caption_prompt_snippet() -> str:
@@ -296,8 +197,9 @@ def parse_iso_duration(dur: str) -> str:
 def is_within_24_hours(published_text: str) -> bool:
     """Check if video/clip was published in the recent 24 hours.
 
-    Safely rejects multi-day offsets (e.g. '36h ago', '1d ago', '2 days ago')
-    and defaults to False on unparseable dates.
+    Safely parses ISO-8601 timestamps and relative time expressions.
+    Strictly returns False for values >= 24h (e.g. '36h ago', '1d ago', '2 days ago')
+    and defaults to False on unparseable or unrecognized strings.
     """
     if not published_text:
         return False
@@ -307,7 +209,7 @@ def is_within_24_hours(published_text: str) -> bool:
     if "t" in p and ("z" in p or "+" in p or "-" in p[10:]):
         try:
             dt = datetime.fromisoformat(p.replace("Z", "+00:00"))
-            diff_hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+            diff_hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
             return 0 <= diff_hours <= 24.0
         except (ValueError, TypeError):
             pass
@@ -316,18 +218,21 @@ def is_within_24_hours(published_text: str) -> bool:
     m_hr = re.search(r"(\d+)\s*(?:h|hr|hours?)\s*ago", p)
     if m_hr:
         hrs = int(m_hr.group(1))
-        return hrs <= 24
+        return 0 <= hrs <= 24
 
     # Check minutes: "45m ago", "10 minutes ago"
     if re.search(r"\d+\s*(?:m|min|minutes?)\s*ago", p):
         return True
 
-    # Check days/weeks/months: "1d ago", "2 days ago", "1 week ago" -> False
+    # Check seconds: "30s ago", "few seconds ago", "just now", "moments ago"
+    if re.search(r"\d+\s*(?:s|sec|seconds?)\s*ago", p) or any(
+        w in p for w in ["just now", "moments ago", "few seconds"]
+    ):
+        return True
+
+    # Check days/weeks/months/years: "1d ago", "2 days ago", "1 week ago" -> explicitly False
     if re.search(r"\d+\s*(?:d|day|days?|week|weeks?|month|months?|year|years?)\s*ago", p):
         return False
-
-    if any(w in p for w in ["just now", "moments ago", "few seconds ago", "recent"]):
-        return True
 
     return False
 
@@ -433,6 +338,8 @@ def fetch_from_youtube_data_api(
             score_explanation = f"Calculated from {views_per_hour:,} views/hr and {engagement_rate * 100:.1f}% engagement"
             verified_metrics = True
         else:
+            views_per_hour = None
+            engagement_rate = None
             virality_score = None
             score_explanation = "Metrics not available from API"
             verified_metrics = False
@@ -445,15 +352,19 @@ def fetch_from_youtube_data_api(
             "channel": snippet.get("channelTitle", ""),
             "views": views_str,
             "published": published_label,
+            "published_at": pub_at,
+            "observed_at": now_utc.isoformat(),
             "duration": dur_str,
             "thumbnail": f"https://img.youtube.com/vi/{vid}/hqdefault.jpg",
             "url": f"https://www.youtube.com/watch?v={vid}",
             "virality_score": virality_score,
             "score_explanation": score_explanation,
+            "views_per_hour": views_per_hour,
+            "engagement_rate": engagement_rate,
+            "data_freshness": "live_api",
             "verified_metrics": verified_metrics,
             "region": region_label,
             "niche": niche,
-            "observed_at": now_utc.isoformat(),
         })
     return videos
 
@@ -463,6 +374,7 @@ def fetch_channel_rss_videos(channel_id: str, channel_name: str, niche: str, reg
     videos = []
     feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     req = urllib.request.Request(feed_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+    now_utc = datetime.now(timezone.utc)
     try:
         with urllib.request.urlopen(req, timeout=3.5) as response:
             content = response.read()
@@ -479,15 +391,14 @@ def fetch_channel_rss_videos(channel_id: str, channel_name: str, niche: str, reg
                 if vid_el is None or not vid_el.text:
                     continue
                 vid = vid_el.text.strip()
-                title = title_el.text.strip() if title_el is not None and title_el.text else "Viral Video"
+                title = title_el.text.strip() if title_el is not None and title_el.text else "Creator Video"
                 pub_date = pub_el.text.strip() if pub_el is not None and pub_el.text else ""
 
-                published_label = "Today"
+                published_label = "Recent"
                 if pub_date:
                     try:
                         dt = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
-                        now = datetime.now(timezone.utc)
-                        diff = now - dt
+                        diff = now_utc - dt
                         hrs = max(1, int(diff.total_seconds() // 3600))
                         published_label = f"{hrs}h ago" if hrs < 24 else f"{hrs // 24}d ago"
                     except Exception:
@@ -499,17 +410,21 @@ def fetch_channel_rss_videos(channel_id: str, channel_name: str, niche: str, reg
                     "platform_icon": "▶️",
                     "title": title,
                     "channel": channel_name,
-                    "views": "New",
+                    "views": "Not available",
                     "published": published_label,
+                    "published_at": pub_date,
+                    "observed_at": now_utc.isoformat(),
                     "duration": "Unknown",
                     "thumbnail": f"https://img.youtube.com/vi/{vid}/hqdefault.jpg",
                     "url": f"https://www.youtube.com/watch?v={vid}",
                     "virality_score": None,
                     "score_explanation": "RSS creator broadcast (view counts unavailable from feed)",
+                    "views_per_hour": None,
+                    "engagement_rate": None,
+                    "data_freshness": "rss_feed",
                     "verified_metrics": False,
-                    "region": region_str,
+                    "region": "Creator RSS",
                     "niche": niche,
-                    "observed_at": now.isoformat(),
                 })
     except Exception as exc:
         logger.debug("RSS feed fetch failed for %s (%s): %s", channel_name, channel_id, exc)
@@ -552,7 +467,7 @@ def fetch_trending_videos(
 
     videos: List[Dict[str, Any]] = []
 
-    # 1. First, attempt live RSS fetching from top creator channels in PARALLEL
+    # 2. First, attempt live RSS fetching from top creator channels in PARALLEL
     target_niches = [niche_key] if niche_key != "all" else ["tech", "gaming", "podcasts", "entertainment", "education"]
     feed_tasks: List[tuple[str, str, str]] = []
     for n in target_niches:
@@ -580,41 +495,6 @@ def fetch_trending_videos(
         except Exception as e:
             logger.debug("Parallel RSS worker error: %s", e)
 
-    # 2. Backfill with verified, authentic matching video pools (no mismatched fake tuples)
-    pool_keys = [niche_key] if niche_key in NICHE_VIDEO_POOLS else ["tech", "gaming", "podcasts", "entertainment", "education"]
-    seen_ids = {v["id"] for v in videos}
-
-    for pkey in pool_keys:
-        pool = NICHE_VIDEO_POOLS.get(pkey, [])
-        for vid, title, channel, views, published, duration, score in pool:
-            if vid in seen_ids:
-                continue
-            if timeframe == "24h" and not is_within_24_hours(published):
-                continue
-            seen_ids.add(vid)
-            videos.append({
-                "id": vid,
-                "platform": "youtube",
-                "platform_icon": "▶️",
-                "title": title,
-                "channel": channel,
-                "views": views,
-                "published": published,
-                "duration": duration,
-                "thumbnail": f"https://img.youtube.com/vi/{vid}/hqdefault.jpg",
-                "url": f"https://www.youtube.com/watch?v={vid}",
-                "virality_score": None,
-                "score_explanation": "Curated reference video (live metrics unavailable without YouTube Data API key)",
-                "verified_metrics": False,
-                "region": region_str,
-                "niche": pkey,
-                "observed_at": datetime.now(timezone.utc).isoformat(),
-            })
-            if len(videos) >= limit:
-                break
-        if len(videos) >= limit:
-            break
-
     return videos[:limit]
 
 
@@ -637,91 +517,92 @@ def fetch_twitch_trending_clips(
         return []
 
     try:
-        import requests
-        # Get App Access Token
-        token_resp = requests.post(
-            "https://id.twitch.tv/oauth2/token",
-            params={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "grant_type": "client_credentials",
-            },
-            timeout=5.0,
-        )
-        if token_resp.status_code != 200:
-            logger.warning("Twitch OAuth token request failed: %s", token_resp.text)
-            return []
-        token_data = token_resp.json()
-        access_token = token_data.get("access_token")
-        if not access_token:
-            return []
+        import httpx
+        with httpx.Client(timeout=5.0) as client:
+            token_resp = client.post(
+                "https://id.twitch.tv/oauth2/token",
+                params={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "client_credentials",
+                },
+            )
+            if token_resp.status_code != 200:
+                logger.warning("Twitch OAuth token request failed: %s", token_resp.text)
+                return []
+            token_data = token_resp.json()
+            access_token = token_data.get("access_token")
+            if not access_token:
+                return []
 
-        # Map niche to Twitch Game IDs
-        twitch_game_map = {
-            "gaming": "32982",  # GTA V
-            "tech": "509658",    # Just Chatting / Tech
-            "all": "509658",
-        }
-        game_id = twitch_game_map.get(niche.lower(), "509658")
-        headers = {
-            "Client-ID": client_id,
-            "Authorization": f"Bearer {access_token}",
-        }
-        clips_resp = requests.get(
-            "https://api.twitch.tv/helix/clips",
-            headers=headers,
-            params={"game_id": game_id, "first": min(limit, 50)},
-            timeout=5.0,
-        )
-        if clips_resp.status_code != 200:
-            logger.warning("Twitch Helix clips fetch failed: %s", clips_resp.text)
-            return []
+            twitch_game_map = {
+                "gaming": "32982",  # GTA V
+                "tech": "509658",    # Just Chatting / Tech
+                "all": "509658",
+            }
+            game_id = twitch_game_map.get(niche.lower(), "509658")
+            headers = {
+                "Client-ID": client_id,
+                "Authorization": f"Bearer {access_token}",
+            }
+            clips_resp = client.get(
+                "https://api.twitch.tv/helix/clips",
+                headers=headers,
+                params={"game_id": game_id, "first": min(limit, 50)},
+            )
+            if clips_resp.status_code != 200:
+                logger.warning("Twitch Helix clips fetch failed: %s", clips_resp.text)
+                return []
 
-        data = clips_resp.json().get("data", [])
-        clips: List[Dict[str, Any]] = []
-        now_utc = datetime.now(timezone.utc)
+            data = clips_resp.json().get("data", [])
+            clips: List[Dict[str, Any]] = []
+            now_utc = datetime.now(timezone.utc)
 
-        for c in data:
-            raw_views = int(c.get("view_count", 0))
-            pub_at = c.get("created_at", "")
-            hrs = 12
-            if pub_at:
-                try:
-                    dt = datetime.fromisoformat(pub_at.replace("Z", "+00:00"))
-                    diff_sec = (now_utc - dt).total_seconds()
-                    hrs = max(1, int(diff_sec // 3600))
-                except Exception:
-                    pass
+            for c in data:
+                raw_views = int(c.get("view_count", 0))
+                pub_at = c.get("created_at", "")
+                hrs = 12
+                if pub_at:
+                    try:
+                        dt = datetime.fromisoformat(pub_at.replace("Z", "+00:00"))
+                        diff_sec = (now_utc - dt).total_seconds()
+                        hrs = max(1, int(diff_sec // 3600))
+                    except Exception:
+                        pass
 
-            published_label = f"{hrs}h ago" if hrs < 24 else f"{hrs // 24}d ago"
-            if timeframe == "24h" and hrs >= 24:
-                continue
+                published_label = f"{hrs}h ago" if hrs < 24 else f"{hrs // 24}d ago"
+                if timeframe == "24h" and hrs >= 24:
+                    continue
 
-            views_per_hour = round(raw_views / max(0.5, hrs))
-            velocity_pts = min(40, max(0, math.log10(max(1, views_per_hour)) * 8))
-            virality_score = min(99, max(50, round(50 + velocity_pts)))
+                views_per_hour = round(raw_views / max(0.5, hrs))
+                velocity_pts = min(40, max(0, math.log10(max(1, views_per_hour)) * 8))
+                virality_score = min(99, max(50, round(50 + velocity_pts)))
 
-            clips.append({
-                "id": c.get("id"),
-                "platform": "twitch",
-                "platform_icon": "🟣",
-                "title": c.get("title", ""),
-                "channel": c.get("broadcaster_name", ""),
-                "views": f"{raw_views:,} views",
-                "published": published_label,
-                "duration": f"{round(float(c.get('duration', 30)))}s",
-                "thumbnail": c.get("thumbnail_url", ""),
-                "url": c.get("url", ""),
-                "virality_score": virality_score,
-                "score_explanation": f"Twitch clip with {raw_views:,} views ({views_per_hour:,}/hr)",
-                "verified_metrics": True,
-                "region": "Twitch 🟣",
-                "niche": niche,
-                "observed_at": now_utc.isoformat(),
-            })
-            if len(clips) >= limit:
-                break
-        return clips
+                clips.append({
+                    "id": c.get("id"),
+                    "platform": "twitch",
+                    "platform_icon": "🟣",
+                    "title": c.get("title", ""),
+                    "channel": c.get("broadcaster_name", ""),
+                    "views": f"{raw_views:,} views",
+                    "published": published_label,
+                    "published_at": pub_at,
+                    "observed_at": now_utc.isoformat(),
+                    "duration": f"{round(float(c.get('duration', 30)))}s",
+                    "thumbnail": c.get("thumbnail_url", ""),
+                    "url": c.get("url", ""),
+                    "virality_score": virality_score,
+                    "score_explanation": f"Twitch clip with {raw_views:,} views ({views_per_hour:,}/hr)",
+                    "views_per_hour": views_per_hour,
+                    "engagement_rate": None,
+                    "data_freshness": "twitch_api",
+                    "verified_metrics": True,
+                    "region": "Twitch 🟣",
+                    "niche": niche,
+                })
+                if len(clips) >= limit:
+                    break
+            return clips
     except Exception as e:
         logger.warning("Twitch clips fetch failed: %s", e)
         return []
@@ -762,7 +643,7 @@ def fetch_all_trending(
         _TRENDING_CACHE[cache_key] = (now, res)
         return res
 
-    # Fetch YouTube videos with live RSS & verified backfills
+    # Fetch YouTube videos with live RSS
     yt = fetch_trending_videos(region=region, niche=niche, timeframe=timeframe, limit=limit, force_refresh=force_refresh)
     tw = fetch_twitch_trending_clips(niche=niche, timeframe=timeframe, limit=6)
 
@@ -790,11 +671,16 @@ def fetch_us_trending_videos(limit: int = 20) -> List[Dict[str, Any]]:
     return fetch_trending_videos(region="US", niche="all", timeframe="24h", limit=limit)
 
 
-async def learn_from_trending_videos(config: Any = None) -> Dict[str, Any]:
-    """Autonomous agent pass: analyzes current top videos to extract viral patterns."""
-    videos = fetch_trending_videos(region="US", niche="all", limit=10)
+async def learn_from_trending_videos(ctx: Any = None, config: Any = None) -> Dict[str, Any]:
+    """Autonomous agent pass: analyzes current top breakout videos to extract viral patterns.
+
+    Designed to run as an ARQ cron task on the cron worker.
+    Persists patterns in PostgreSQL via ViralLearningRepository.
+    """
+    loop = asyncio.get_running_loop()
+    videos = await loop.run_in_executor(None, lambda: fetch_trending_videos(region="US", niche="all", limit=10))
     if not videos:
-        return get_learning_memory()
+        return await ViralLearningRepository.get_latest_memory()
 
     video_summaries = [f"- '{v['title']}' by {v['channel']} ({v['views']})" for v in videos[:8]]
     summary_text = "\n".join(video_summaries)
@@ -814,20 +700,18 @@ async def learn_from_trending_videos(config: Any = None) -> Dict[str, Any]:
     )
 
     agent = _get_agent(system_prompt="You are an expert social media analyst.")
-    memory = get_learning_memory()
+    memory = await ViralLearningRepository.get_latest_memory()
 
     if agent:
         try:
-            resp = await agent.run(prompt)
+            resp = await asyncio.wait_for(agent.run(prompt), timeout=30.0)
             raw = str(getattr(resp, "data", resp)).strip()
-            # Try to extract JSON object; handle single-quoted keys from some LLMs
             json_m = re.search(r"\{.*\}", raw, re.DOTALL)
             if json_m:
                 json_text = json_m.group(0)
                 try:
                     parsed = json.loads(json_text)
                 except json.JSONDecodeError:
-                    # Retry with single quotes replaced by double quotes
                     json_text = json_text.replace("'", '"')
                     parsed = json.loads(json_text)
                 if isinstance(parsed, dict) and "learned_hooks" in parsed:
@@ -838,31 +722,19 @@ async def learn_from_trending_videos(config: Any = None) -> Dict[str, Any]:
                     memory["total_cycles"] = memory.get("total_cycles", 0) + 1
                     memory["total_videos_analyzed"] = memory.get("total_videos_analyzed", 0) + len(videos)
                     memory["last_learned_at"] = datetime.now(timezone.utc).isoformat()
-                    save_learning_memory(memory)
-                    logger.info("Autonomous viral learning cycle #%d saved successfully", memory["total_cycles"])
+                    await ViralLearningRepository.save_memory(memory)
+                    logger.info("Autonomous viral learning cycle #%d saved successfully to PostgreSQL", memory["total_cycles"])
                     return memory
         except Exception as exc:
             logger.warning("Local AI agent learning pass encountered: %s", exc)
 
     memory["total_cycles"] = memory.get("total_cycles", 0) + 1
     memory["last_learned_at"] = datetime.now(timezone.utc).isoformat()
-    save_learning_memory(memory)
+    await ViralLearningRepository.save_memory(memory)
     return memory
 
 
 def start_continuous_learning_agent(interval_seconds: int = 3600) -> Optional[asyncio.Task]:
-    """Start continuous viral pattern learning loop in the background."""
-    async def _learning_loop():
-        await asyncio.sleep(15)  # Initial wait for backend to finish startup
-        while True:
-            try:
-                await learn_from_trending_videos()
-            except Exception as e:
-                logger.debug("Continuous learning cycle encountered: %s", e)
-            await asyncio.sleep(interval_seconds)
-
-    try:
-        loop = asyncio.get_running_loop()
-        return loop.create_task(_learning_loop())
-    except RuntimeError:
-        return None
+    """Deprecated: Continuous viral learning is now scheduled as an ARQ cron task in cron_worker.py."""
+    logger.debug("Viral learning is scheduled in cron_worker as an ARQ cron job.")
+    return None
