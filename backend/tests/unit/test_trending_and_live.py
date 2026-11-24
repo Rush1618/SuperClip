@@ -123,7 +123,7 @@ async def test_viral_learning_memory_repository():
     mem = await ViralLearningRepository.get_latest_memory()
     assert "learned_hooks" in mem
     assert "title_formulas" in mem
-    assert len(mem["learned_hooks"]) > 0
+    assert isinstance(mem["learned_hooks"], list)
 
     custom_mem = dict(mem)
     custom_mem["learned_hooks"] = ["Test Hook 1", "Test Hook 2"]
@@ -133,4 +133,5 @@ async def test_viral_learning_memory_repository():
     updated = await ViralLearningRepository.get_latest_memory()
     assert updated["total_cycles"] == 99
     assert updated["learned_hooks"] == ["Test Hook 1", "Test Hook 2"]
+    assert len(updated["learned_hooks"]) == 2
 

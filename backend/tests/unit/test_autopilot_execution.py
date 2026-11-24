@@ -55,14 +55,24 @@ async def test_rights_evidence_validation():
             permission_evidence="creator_agreement",
         )
 
-    # Random unstructured short string must be rejected
-    with pytest.raises(ValueError, match="Permission evidence must be a valid agreement URL"):
+    # Random unstructured string must be rejected
+    with pytest.raises(ValueError, match="Evidence verification failed"):
         await service.register_source_rights(
             user_id="u1",
             source_id="yt-123",
             platform="youtube",
             rights_state="licensed",
             permission_evidence="not_a_valid_ref",
+        )
+
+    # Disallowed host (e.g. localhost/loopback spoof) must be rejected
+    with pytest.raises(ValueError, match="Evidence verification failed"):
+        await service.register_source_rights(
+            user_id="u1",
+            source_id="yt-123",
+            platform="youtube",
+            rights_state="licensed",
+            permission_evidence="http://localhost/fake-license.pdf",
         )
 
     # Valid verifiable URL evidence succeeds
@@ -365,8 +375,13 @@ async def test_autopilot_persists_even_if_metadata_save_fails():
         return_value={"allowed": True, "rights_state": "creator_authorized"}
     )
 
-    # First call to save_source_metadata succeeds, second call (job_id save) raises error
-    save_meta_mock = AsyncMock(side_effect=[None, RuntimeError("Transient DB glitch")])
+    # First call to save_source_metadata succeeds, retry calls (job_id save) raise errors
+    save_meta_mock = AsyncMock(side_effect=[
+        None,
+        RuntimeError("Transient DB glitch"),
+        RuntimeError("Transient DB glitch"),
+        RuntimeError("Transient DB glitch"),
+    ])
 
     with patch("src.repositories.source_repository.SourceRepository.create_source", new=AsyncMock(return_value="src-meta")), \
          patch("src.repositories.task_repository.TaskRepository.create_task", new=AsyncMock(return_value="task-meta")), \

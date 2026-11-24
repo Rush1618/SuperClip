@@ -9,6 +9,7 @@ Enforces rights checks, outbox idempotency, and transactional intent tracking.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 from sqlalchemy import text
@@ -88,7 +89,8 @@ class AutoUploadService:
 
         # Verify source rights before distributing
         # 0. Check global social publishing feature gate
-        if os.getenv("SOCIAL_PUBLISHING_ACCESS", "off").lower() in ("off", "false", "0"):
+        access = getattr(self.config, "social_publishing_access", None) or os.getenv("SOCIAL_PUBLISHING_ACCESS", "all")
+        if str(access).lower() in ("off", "false", "0"):
             return {
                 "status": "disabled",
                 "message": "Social publishing is currently disabled by administrator (SOCIAL_PUBLISHING_ACCESS=off).",

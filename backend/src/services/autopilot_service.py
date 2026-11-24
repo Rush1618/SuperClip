@@ -485,17 +485,23 @@ class AutopilotService:
                         rejected_reasons["worker_enqueue_failed"] = rejected_reasons.get("worker_enqueue_failed", 0) + 1
                         continue
 
-                    # Persist processing_job_id on task source metadata in a separate try/except
-                    # so a transient metadata save error never marks an already-queued worker job as failed
+                    # Persist processing_job_id on task source metadata with retry
+                    # so a transient DB error does not drop recovery tracking or mark the queued job as failed
                     if processing_job_id:
-                        try:
-                            await TaskRepository.save_source_metadata(
-                                self.db,
-                                task_id,
-                                {"processing_job_id": processing_job_id},
-                            )
-                        except Exception as meta_err:
-                            logger.warning("Could not persist processing_job_id for task %s: %s", task_id, meta_err)
+                        saved = False
+                        for attempt in range(3):
+                            try:
+                                await TaskRepository.save_source_metadata(
+                                    self.db,
+                                    task_id,
+                                    {"processing_job_id": processing_job_id},
+                                )
+                                saved = True
+                                break
+                            except Exception as meta_err:
+                                logger.warning("Retry %d: could not persist processing_job_id for task %s: %s", attempt + 1, task_id, meta_err)
+                        if not saved:
+                            logger.error("Failed to persist processing_job_id for task %s after retries", task_id)
 
                     tasks_created += 1
                     logger.info(

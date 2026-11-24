@@ -32,7 +32,8 @@ async def test_get_auto_upload_overview_with_accounts():
 
 
 @pytest.mark.asyncio
-async def test_auto_upload_clip_no_connected_accounts():
+async def test_auto_upload_clip_no_connected_accounts(monkeypatch):
+    monkeypatch.setenv("SOCIAL_PUBLISHING_ACCESS", "all")
     db = AsyncMock()
     service = AutoUploadService(db=db)
     service.social_service.list_connections = AsyncMock(return_value=[])
@@ -42,3 +43,14 @@ async def test_auto_upload_clip_no_connected_accounts():
         assert res["status"] == "no_connected_accounts"
         assert "no social accounts" in res["message"]
 
+
+@pytest.mark.asyncio
+async def test_auto_upload_clip_feature_gate_disabled(monkeypatch):
+    monkeypatch.setenv("SOCIAL_PUBLISHING_ACCESS", "off")
+    db = AsyncMock()
+    service = AutoUploadService(db=db)
+
+    with patch("src.repositories.clip_repository.ClipRepository.get_clip_by_id", new=AsyncMock(return_value={"id": "clip-1", "task_id": "task-1"})):
+        res = await service.auto_upload_clip("user-123", task_id="task-1", clip_id="clip-1")
+        assert res["status"] == "disabled"
+        assert "disabled by administrator" in res["message"]
