@@ -304,6 +304,85 @@ async def test_autopilot_queue_failure_marks_task_error():
 
 
 @pytest.mark.asyncio
+async def test_autopilot_persists_even_if_metadata_save_fails():
+    db = AsyncMock()
+    service = AutopilotService(db)
+
+    rule_row = {
+        "id": "rule-meta-fail",
+        "user_id": "u-user",
+        "team_id": None,
+        "name": "Meta Fail Rule",
+        "enabled": True,
+        "niche": "tech",
+        "region": "US",
+        "min_trend_score": 70,
+        "clip_count": 1,
+        "daily_limit": 5,
+        "max_concurrent_jobs": 2,
+        "processing_workflow": "highlights",
+        "sources": json.dumps(["youtube"]),
+        "channels": json.dumps([]),
+        "languages": json.dumps([]),
+        "keywords": json.dumps([]),
+        "excluded_keywords": json.dumps([]),
+        "min_rights_status": "creator_authorized",
+    }
+
+    rule_res = MagicMock()
+    rule_res.mappings().first.return_value = rule_row
+
+    daily_count_res = MagicMock()
+    daily_count_res.scalar.return_value = 0
+
+    active_count_res = MagicMock()
+    active_count_res.scalar.return_value = 0
+
+    exec_insert_res = MagicMock()
+    update_last_run_res = MagicMock()
+
+    db.execute.side_effect = [
+        rule_res,
+        daily_count_res,
+        active_count_res,
+        exec_insert_res,
+        update_last_run_res,
+    ]
+
+    service.trending_service.fetch_worldwide_trending_videos = AsyncMock(
+        return_value=[
+            {
+                "id": "vid-meta",
+                "platform": "youtube",
+                "title": "Meta Test Video",
+                "virality_score": 85,
+                "url": "https://www.youtube.com/watch?v=vid-meta",
+            }
+        ]
+    )
+
+    service.rights_service.check_rights_permission = AsyncMock(
+        return_value={"allowed": True, "rights_state": "creator_authorized"}
+    )
+
+    # First call to save_source_metadata succeeds, second call (job_id save) raises error
+    save_meta_mock = AsyncMock(side_effect=[None, RuntimeError("Transient DB glitch")])
+
+    with patch("src.repositories.source_repository.SourceRepository.create_source", new=AsyncMock(return_value="src-meta")), \
+         patch("src.repositories.task_repository.TaskRepository.create_task", new=AsyncMock(return_value="task-meta")), \
+         patch("src.repositories.task_repository.TaskRepository.save_source_metadata", new=save_meta_mock), \
+         patch("src.repositories.task_repository.TaskRepository.update_task_status", new=AsyncMock()) as mock_update_status, \
+         patch("src.workers.job_queue.JobQueue.enqueue_processing_job", new=AsyncMock(return_value="job-ok")):
+
+        res = await service.execute_rule("rule-meta-fail")
+
+        assert res["status"] == "completed"
+        # Since queue succeeded, task is counted as created and status is NOT set to error
+        assert res["tasks_created"] == 1
+        mock_update_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_autopilot_rule_filters_non_matching_candidates():
     db = AsyncMock()
     service = AutopilotService(db)

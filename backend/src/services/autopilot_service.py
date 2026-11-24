@@ -472,17 +472,6 @@ class AutopilotService:
                             None,
                             "auto",
                         )
-                        # Persist processing_job_id on task source metadata for recovery & tracking
-                        await TaskRepository.save_source_metadata(
-                            self.db,
-                            task_id,
-                            {"processing_job_id": processing_job_id},
-                        )
-                        tasks_created += 1
-                        logger.info(
-                            "Autopilot rule %s created and enqueued task %s (job %s) for source %s",
-                            rule_id, task_id, processing_job_id, source_id
-                        )
                     except Exception as q_err:
                         logger.error("Could not enqueue autopilot task %s to worker: %s", task_id, q_err)
                         await TaskRepository.update_task_status(
@@ -494,6 +483,25 @@ class AutopilotService:
                             expected_statuses=["queued"],
                         )
                         rejected_reasons["worker_enqueue_failed"] = rejected_reasons.get("worker_enqueue_failed", 0) + 1
+                        continue
+
+                    # Persist processing_job_id on task source metadata in a separate try/except
+                    # so a transient metadata save error never marks an already-queued worker job as failed
+                    if processing_job_id:
+                        try:
+                            await TaskRepository.save_source_metadata(
+                                self.db,
+                                task_id,
+                                {"processing_job_id": processing_job_id},
+                            )
+                        except Exception as meta_err:
+                            logger.warning("Could not persist processing_job_id for task %s: %s", task_id, meta_err)
+
+                    tasks_created += 1
+                    logger.info(
+                        "Autopilot rule %s created and enqueued task %s (job %s) for source %s",
+                        rule_id, task_id, processing_job_id, source_id
+                    )
                 except Exception as task_err:
                     logger.warning("Failed to create autopilot task: %s", task_err)
 

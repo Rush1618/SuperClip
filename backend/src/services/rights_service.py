@@ -249,7 +249,7 @@ class RightsService:
 
             is_valid_ref = bool(re.match(r"^(CONTRACT|LICENSE|AGREEMENT|AUTH|DOC|PERM)-[A-Za-z0-9_-]{4,}$", evidence, re.IGNORECASE))
 
-            if not is_valid_url and not is_valid_ref and len(evidence) < 12:
+            if not is_valid_url and not is_valid_ref:
                 raise ValueError(
                     f"Permission evidence must be a valid agreement URL (e.g. 'https://licenses.example.com/agreement.pdf') "
                     f"or a verifiable reference identifier (e.g. 'CONTRACT-98214') to register content under '{rights_state}'."
