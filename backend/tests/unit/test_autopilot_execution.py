@@ -526,3 +526,87 @@ async def test_maybe_trigger_auto_upload_inspects_workflow_options():
             team_id=None,
             top_clips_only=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_update_autopilot_rule_authorized():
+    db = AsyncMock()
+    service = AutopilotService(db)
+
+    # 1. Existing rule check succeeds
+    check_mock = MagicMock()
+    check_mock.first.return_value = ("rule-1",)
+
+    # 2. Update returning updated row
+    update_mock = MagicMock()
+    update_mock.mappings().first.return_value = {
+        "id": "rule-1",
+        "name": "Updated Gaming Rule",
+        "niche": "gaming",
+        "min_trend_score": 85,
+        "clip_count": 4,
+    }
+
+    db.execute.side_effect = [check_mock, update_mock]
+
+    updated = await service.update_rule(
+        "rule-1",
+        {
+            "name": "Updated Gaming Rule",
+            "min_trend_score": 85,
+            "clip_count": 4,
+            "languages": ["en", "hi"],
+        },
+        user_id="u-1",
+    )
+
+    assert updated is not None
+    assert updated["name"] == "Updated Gaming Rule"
+    assert updated["min_trend_score"] == 85
+    assert db.commit.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_update_autopilot_rule_not_found():
+    db = AsyncMock()
+    service = AutopilotService(db)
+
+    check_mock = MagicMock()
+    check_mock.first.return_value = None
+    db.execute.return_value = check_mock
+
+    updated = await service.update_rule(
+        "rule-404",
+        {"name": "Nonexistent Rule"},
+        user_id="u-1",
+    )
+
+    assert updated is None
+
+
+@pytest.mark.asyncio
+async def test_delete_autopilot_rule_authorized():
+    db = AsyncMock()
+    service = AutopilotService(db)
+
+    delete_mock = MagicMock()
+    delete_mock.rowcount = 1
+    db.execute.return_value = delete_mock
+
+    success = await service.delete_rule("rule-1", user_id="u-1")
+    assert success is True
+    assert db.commit.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_autopilot_rule_not_found():
+    db = AsyncMock()
+    service = AutopilotService(db)
+
+    delete_mock = MagicMock()
+    delete_mock.rowcount = 0
+    db.execute.return_value = delete_mock
+
+    success = await service.delete_rule("rule-404", user_id="u-1")
+    assert success is False
+

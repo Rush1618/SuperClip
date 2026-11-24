@@ -181,6 +181,103 @@ class AutopilotService:
         row = result.mappings().first()
         return dict(row) if row else {"id": rule_id, "status": "created"}
 
+    async def delete_rule(
+        self,
+        rule_id: str,
+        user_id: Optional[str] = None,
+    ) -> bool:
+        """Permanently delete an autopilot rule with authorization check."""
+        if user_id:
+            query = text(
+                """
+                DELETE FROM autopilot_rules
+                WHERE id = :id AND (
+                    user_id = :user_id OR
+                    team_id IN (SELECT team_id FROM team_members WHERE user_id = :user_id)
+                )
+                """
+            )
+            res = await self.db.execute(query, {"id": rule_id, "user_id": user_id})
+        else:
+            query = text("DELETE FROM autopilot_rules WHERE id = :id")
+            res = await self.db.execute(query, {"id": rule_id})
+        await self.db.commit()
+        return res.rowcount > 0
+
+    async def update_rule(
+        self,
+        rule_id: str,
+        rule_data: Dict[str, Any],
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update an existing autopilot rule with authorization check."""
+        # Check rule exists and caller has access
+        if user_id:
+            check_q = text(
+                """
+                SELECT id FROM autopilot_rules
+                WHERE id = :id AND (
+                    user_id = :user_id OR
+                    team_id IN (SELECT team_id FROM team_members WHERE user_id = :user_id)
+                )
+                """
+            )
+            check_res = await self.db.execute(check_q, {"id": rule_id, "user_id": user_id})
+        else:
+            check_q = text("SELECT id FROM autopilot_rules WHERE id = :id")
+            check_res = await self.db.execute(check_q, {"id": rule_id})
+
+        if not check_res.first():
+            return None
+
+        update_query = text(
+            """
+            UPDATE autopilot_rules
+            SET name = COALESCE(:name, name),
+                niche = COALESCE(:niche, niche),
+                region = COALESCE(:region, region),
+                min_trend_score = COALESCE(:min_trend_score, min_trend_score),
+                clip_count = COALESCE(:clip_count, clip_count),
+                daily_limit = COALESCE(:daily_limit, daily_limit),
+                schedule_cron = COALESCE(:schedule_cron, schedule_cron),
+                max_concurrent_jobs = COALESCE(:max_concurrent_jobs, max_concurrent_jobs),
+                sources = COALESCE(:sources, sources),
+                platforms = COALESCE(:platforms, platforms),
+                channels = COALESCE(:channels, channels),
+                languages = COALESCE(:languages, languages),
+                keywords = COALESCE(:keywords, keywords),
+                excluded_keywords = COALESCE(:excluded_keywords, excluded_keywords),
+                min_rights_status = COALESCE(:min_rights_status, min_rights_status),
+                processing_workflow = COALESCE(:processing_workflow, processing_workflow),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = :id
+            RETURNING *
+            """
+        )
+        params = {
+            "id": rule_id,
+            "name": rule_data.get("name"),
+            "niche": rule_data.get("niche"),
+            "region": rule_data.get("region"),
+            "min_trend_score": rule_data.get("min_trend_score"),
+            "clip_count": rule_data.get("clip_count"),
+            "daily_limit": rule_data.get("daily_limit"),
+            "schedule_cron": rule_data.get("schedule_cron"),
+            "max_concurrent_jobs": rule_data.get("max_concurrent_jobs"),
+            "sources": json.dumps(rule_data["sources"]) if "sources" in rule_data else None,
+            "platforms": json.dumps(rule_data["platforms"]) if "platforms" in rule_data else None,
+            "channels": json.dumps(rule_data["channels"]) if "channels" in rule_data else None,
+            "languages": json.dumps(rule_data["languages"]) if "languages" in rule_data else None,
+            "keywords": json.dumps(rule_data["keywords"]) if "keywords" in rule_data else None,
+            "excluded_keywords": json.dumps(rule_data["excluded_keywords"]) if "excluded_keywords" in rule_data else None,
+            "min_rights_status": rule_data.get("min_rights_status"),
+            "processing_workflow": rule_data.get("processing_workflow"),
+        }
+        res = await self.db.execute(update_query, params)
+        await self.db.commit()
+        row = res.mappings().first()
+        return dict(row) if row else None
+
     async def toggle_rule(
         self,
         rule_id: str,

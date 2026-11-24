@@ -88,6 +88,15 @@ interface AutopilotRuleItem {
   min_trend_score: number;
   clip_count: number;
   daily_limit: number;
+  max_concurrent_jobs?: number;
+  sources?: string[];
+  platforms?: string[];
+  channels?: string[];
+  languages?: string[];
+  keywords?: string[];
+  excluded_keywords?: string[];
+  min_rights_status?: string;
+  processing_workflow?: string;
   last_run_at?: string;
 }
 
@@ -169,9 +178,19 @@ export default function SettingsPage() {
   const [sourceRights, setSourceRights] = useState<SourceRightsItem[]>([]);
   const [isTestingModel, setIsTestingModel] = useState(false);
   const [createRuleOpen, setCreateRuleOpen] = useState(false);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [newRuleName, setNewRuleName] = useState("");
   const [newRuleNiche, setNewRuleNiche] = useState("all");
   const [newRuleScore, setNewRuleScore] = useState("70");
+  const [newRuleClipCount, setNewRuleClipCount] = useState("3");
+  const [newRuleDailyLimit, setNewRuleDailyLimit] = useState("5");
+  const [newRuleCron, setNewRuleCron] = useState("0 */2 * * *");
+  const [newRuleMaxConcurrent, setNewRuleMaxConcurrent] = useState("2");
+  const [newRuleLanguages, setNewRuleLanguages] = useState("en");
+  const [newRuleChannels, setNewRuleChannels] = useState("");
+  const [newRuleKeywords, setNewRuleKeywords] = useState("");
+  const [newRuleExcludedKeywords, setNewRuleExcludedKeywords] = useState("");
+  const [newRuleWorkflow, setNewRuleWorkflow] = useState("highlights");
   const [createRightsOpen, setCreateRightsOpen] = useState(false);
   const [rightsSourceId, setRightsSourceId] = useState("");
   const [rightsPlatform, setRightsPlatform] = useState("youtube");
@@ -300,30 +319,113 @@ export default function SettingsPage() {
     }
   };
 
-  const handleCreateRule = async () => {
+  const resetRuleForm = () => {
+    setEditingRuleId(null);
+    setNewRuleName("");
+    setNewRuleNiche("all");
+    setNewRuleScore("70");
+    setNewRuleClipCount("3");
+    setNewRuleDailyLimit("5");
+    setNewRuleCron("0 */2 * * *");
+    setNewRuleMaxConcurrent("2");
+    setNewRuleLanguages("en");
+    setNewRuleChannels("");
+    setNewRuleKeywords("");
+    setNewRuleExcludedKeywords("");
+    setNewRuleWorkflow("highlights");
+  };
+
+  const handleOpenEditRule = (rule: AutopilotRuleItem) => {
+    setEditingRuleId(rule.id);
+    setNewRuleName(rule.name);
+    setNewRuleNiche(rule.niche || "all");
+    setNewRuleScore(String(rule.min_trend_score || 70));
+    setNewRuleClipCount(String(rule.clip_count || 3));
+    setNewRuleDailyLimit(String(rule.daily_limit || 5));
+    setNewRuleCron(rule.schedule_cron || "0 */2 * * *");
+    setNewRuleMaxConcurrent(String(rule.max_concurrent_jobs || 2));
+    setNewRuleLanguages((rule.languages || ["en"]).join(", "));
+    setNewRuleChannels((rule.channels || []).join(", "));
+    setNewRuleKeywords((rule.keywords || []).join(", "));
+    setNewRuleExcludedKeywords((rule.excluded_keywords || []).join(", "));
+    setNewRuleWorkflow(rule.processing_workflow || "highlights");
+    setCreateRuleOpen(true);
+  };
+
+  const handleDuplicateAutopilotRule = (rule: AutopilotRuleItem) => {
+    setEditingRuleId(null);
+    setNewRuleName(`${rule.name} (Copy)`);
+    setNewRuleNiche(rule.niche || "all");
+    setNewRuleScore(String(rule.min_trend_score || 70));
+    setNewRuleClipCount(String(rule.clip_count || 3));
+    setNewRuleDailyLimit(String(rule.daily_limit || 5));
+    setNewRuleCron(rule.schedule_cron || "0 */2 * * *");
+    setNewRuleMaxConcurrent(String(rule.max_concurrent_jobs || 2));
+    setNewRuleLanguages((rule.languages || ["en"]).join(", "));
+    setNewRuleChannels((rule.channels || []).join(", "));
+    setNewRuleKeywords((rule.keywords || []).join(", "));
+    setNewRuleExcludedKeywords((rule.excluded_keywords || []).join(", "));
+    setNewRuleWorkflow(rule.processing_workflow || "highlights");
+    setCreateRuleOpen(true);
+  };
+
+  const handleDeleteAutopilotRule = async (ruleId: string) => {
+    if (!confirm("Are you sure you want to delete this Autopilot rule?")) return;
+    try {
+      const res = await fetch(`/api/autopilot/rules/${ruleId}`, { method: "DELETE" });
+      if (res.ok) {
+        toast.success("Autopilot rule deleted");
+        void loadAutomationData();
+      } else {
+        toast.error("Failed to delete rule");
+      }
+    } catch {
+      toast.error("Failed to delete rule");
+    }
+  };
+
+  const handleSaveRule = async () => {
     if (!newRuleName.trim()) {
       toast.error("Please enter a rule name");
       return;
     }
+
+    const parseList = (str: string) =>
+      str.split(",").map((s) => s.trim()).filter(Boolean);
+
+    const payload = {
+      name: newRuleName.trim(),
+      niche: newRuleNiche,
+      min_trend_score: parseInt(newRuleScore, 10) || 70,
+      clip_count: parseInt(newRuleClipCount, 10) || 3,
+      daily_limit: parseInt(newRuleDailyLimit, 10) || 5,
+      schedule_cron: newRuleCron.trim() || "0 */2 * * *",
+      max_concurrent_jobs: parseInt(newRuleMaxConcurrent, 10) || 2,
+      languages: parseList(newRuleLanguages).length > 0 ? parseList(newRuleLanguages) : ["en"],
+      channels: parseList(newRuleChannels),
+      keywords: parseList(newRuleKeywords),
+      excluded_keywords: parseList(newRuleExcludedKeywords),
+      processing_workflow: newRuleWorkflow,
+    };
+
     try {
-      const res = await fetch("/api/autopilot/rules", {
-        method: "POST",
+      const url = editingRuleId ? `/api/autopilot/rules/${editingRuleId}` : "/api/autopilot/rules";
+      const method = editingRuleId ? "PUT" : "POST";
+      const res = await fetch(url, {
+        method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: newRuleName.trim(),
-          niche: newRuleNiche,
-          min_trend_score: parseInt(newRuleScore, 10) || 70,
-          clip_count: parseInt(autoClipMaxClips, 10) || 3,
-        }),
+        body: JSON.stringify(payload),
       });
       if (res.ok) {
-        toast.success("Autopilot rule created!");
+        toast.success(editingRuleId ? "Autopilot rule updated!" : "Autopilot rule created!");
         setCreateRuleOpen(false);
-        setNewRuleName("");
+        resetRuleForm();
         void loadAutomationData();
+      } else {
+        toast.error("Failed to save rule");
       }
     } catch {
-      toast.error("Failed to create rule");
+      toast.error("Failed to save rule");
     }
   };
 
@@ -1380,15 +1482,43 @@ export default function SettingsPage() {
                       </p>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="h-7 text-xs gap-1"
+                        className="h-7 px-2 text-xs gap-1"
+                        title="Execute now"
                         onClick={() => handleRunAutopilotRule(rule.id)}
                       >
                         <Play className="size-3 text-emerald-500" />
-                        <span>Run Now</span>
+                        <span className="hidden sm:inline">Run</span>
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs"
+                        title="Edit rule"
+                        onClick={() => handleOpenEditRule(rule)}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs"
+                        title="Duplicate rule"
+                        onClick={() => handleDuplicateAutopilotRule(rule)}
+                      >
+                        Copy
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                        title="Delete rule"
+                        onClick={() => handleDeleteAutopilotRule(rule.id)}
+                      >
+                        Delete
                       </Button>
                       <Switch
                         checked={rule.enabled}
@@ -1460,9 +1590,39 @@ export default function SettingsPage() {
                         Permitted: {(r.permitted_operations || []).join(", ")}
                       </p>
                     </div>
-                    <Badge variant="outline" className="text-[10px]">
-                      Verified
-                    </Badge>
+                    {(() => {
+                      const permSrc = r.permission_source || "";
+                      const isPending = permSrc.includes("status:pending_verification") || permSrc.includes("status:submitted");
+                      const isRejected = permSrc.includes("status:rejected");
+                      const isExpired = permSrc.includes("status:expired");
+
+                      if (isPending) {
+                        return (
+                          <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-600 dark:text-amber-400">
+                            Pending Audit
+                          </Badge>
+                        );
+                      }
+                      if (isRejected) {
+                        return (
+                          <Badge variant="outline" className="text-[10px] border-destructive/30 text-destructive">
+                            Rejected
+                          </Badge>
+                        );
+                      }
+                      if (isExpired) {
+                        return (
+                          <Badge variant="outline" className="text-[10px] border-muted-foreground/30 text-muted-foreground">
+                            Expired
+                          </Badge>
+                        );
+                      }
+                      return (
+                        <Badge variant="outline" className="text-[10px] border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
+                          Verified
+                        </Badge>
+                      );
+                    })()}
                   </div>
                 ))}
               </div>
@@ -1969,21 +2129,24 @@ export default function SettingsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Create Autopilot Rule Dialog */}
-      <Dialog open={createRuleOpen} onOpenChange={setCreateRuleOpen}>
-        <DialogContent className="sm:max-w-md">
+      {/* Create / Edit Autopilot Rule Dialog */}
+      <Dialog open={createRuleOpen} onOpenChange={(open) => {
+        setCreateRuleOpen(open);
+        if (!open) resetRuleForm();
+      }}>
+        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
               <Compass className="size-4 text-primary" />
-              <span>Create Autonomous Autopilot Rule</span>
+              <span>{editingRuleId ? "Edit Autopilot Rule" : "Create Autonomous Autopilot Rule"}</span>
             </DialogTitle>
             <DialogDescription className="text-xs">
               SuperClip will automatically scan for new videos matching this rule, verify rights, and clip them.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-3.5 py-2">
-            <div className="space-y-1.5">
+          <div className="space-y-3 py-2 text-xs">
+            <div className="space-y-1">
               <Label htmlFor="rule-name-input" className="text-xs font-semibold">Rule Name</Label>
               <Input
                 id="rule-name-input"
@@ -1995,7 +2158,7 @@ export default function SettingsPage() {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label htmlFor="rule-niche-select" className="text-xs font-semibold">Niche</Label>
                 <Select value={newRuleNiche} onValueChange={setNewRuleNiche}>
                   <SelectTrigger id="rule-niche-select" className="h-8 text-xs">
@@ -2011,8 +2174,24 @@ export default function SettingsPage() {
                 </Select>
               </div>
 
-              <div className="space-y-1.5">
-                <Label htmlFor="rule-min-score" className="text-xs font-semibold">Min Virality Score</Label>
+              <div className="space-y-1">
+                <Label htmlFor="rule-workflow-select" className="text-xs font-semibold">Workflow</Label>
+                <Select value={newRuleWorkflow} onValueChange={setNewRuleWorkflow}>
+                  <SelectTrigger id="rule-workflow-select" className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="highlights">Highlights</SelectItem>
+                    <SelectItem value="series">Series</SelectItem>
+                    <SelectItem value="recap">Recap</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <Label htmlFor="rule-min-score" className="text-xs font-semibold">Min Score</Label>
                 <Input
                   id="rule-min-score"
                   type="number"
@@ -2023,6 +2202,104 @@ export default function SettingsPage() {
                   className="h-8 text-xs"
                 />
               </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="rule-clip-count" className="text-xs font-semibold">Clips / Source</Label>
+                <Input
+                  id="rule-clip-count"
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={newRuleClipCount}
+                  onChange={(e) => setNewRuleClipCount(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="rule-daily-limit" className="text-xs font-semibold">Daily Limit</Label>
+                <Input
+                  id="rule-daily-limit"
+                  type="number"
+                  min="1"
+                  max="50"
+                  value={newRuleDailyLimit}
+                  onChange={(e) => setNewRuleDailyLimit(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label htmlFor="rule-cron" className="text-xs font-semibold">Schedule (Cron)</Label>
+                <Input
+                  id="rule-cron"
+                  placeholder="0 */2 * * *"
+                  value={newRuleCron}
+                  onChange={(e) => setNewRuleCron(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="rule-concurrent" className="text-xs font-semibold">Max Concurrent Jobs</Label>
+                <Input
+                  id="rule-concurrent"
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={newRuleMaxConcurrent}
+                  onChange={(e) => setNewRuleMaxConcurrent(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="rule-languages" className="text-xs font-semibold">Languages (comma-separated)</Label>
+              <Input
+                id="rule-languages"
+                placeholder="e.g. en, hi, mr"
+                value={newRuleLanguages}
+                onChange={(e) => setNewRuleLanguages(e.target.value)}
+                className="h-8 text-xs"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="rule-channels" className="text-xs font-semibold">Target Channels / Creators (optional)</Label>
+              <Input
+                id="rule-channels"
+                placeholder="e.g. @Veritasium, @mkbhd"
+                value={newRuleChannels}
+                onChange={(e) => setNewRuleChannels(e.target.value)}
+                className="h-8 text-xs"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label htmlFor="rule-keywords" className="text-xs font-semibold">Required Keywords (comma-sep)</Label>
+                <Input
+                  id="rule-keywords"
+                  placeholder="e.g. tutorial, breakthrough"
+                  value={newRuleKeywords}
+                  onChange={(e) => setNewRuleKeywords(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="rule-excluded-keywords" className="text-xs font-semibold">Excluded Keywords</Label>
+                <Input
+                  id="rule-excluded-keywords"
+                  placeholder="e.g. sponsor, teaser"
+                  value={newRuleExcludedKeywords}
+                  onChange={(e) => setNewRuleExcludedKeywords(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
             </div>
           </div>
 
@@ -2030,17 +2307,20 @@ export default function SettingsPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setCreateRuleOpen(false)}
+              onClick={() => {
+                setCreateRuleOpen(false);
+                resetRuleForm();
+              }}
               className="h-8 text-xs"
             >
               Cancel
             </Button>
             <Button
               size="sm"
-              onClick={handleCreateRule}
+              onClick={handleSaveRule}
               className="h-8 text-xs bg-primary text-primary-foreground"
             >
-              Save Rule
+              {editingRuleId ? "Update Rule" : "Save Rule"}
             </Button>
           </div>
         </DialogContent>

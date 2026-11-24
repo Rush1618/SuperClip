@@ -45,6 +45,10 @@ export async function POST(request: Request, context: { params: Promise<{ path: 
   return proxyAutopilotRequest(request, context);
 }
 
+export async function PUT(request: Request, context: { params: Promise<{ path: string[] }> }) {
+  return proxyAutopilotRequest(request, context);
+}
+
 export async function DELETE(request: Request, context: { params: Promise<{ path: string[] }> }) {
   return proxyAutopilotRequest(request, context);
 }

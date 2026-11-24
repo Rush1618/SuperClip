@@ -41,6 +41,26 @@ class CreateAutopilotRuleRequest(BaseModel):
     team_id: Optional[str] = None
 
 
+class UpdateAutopilotRuleRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    enabled: Optional[bool] = None
+    sources: Optional[List[str]] = None
+    platforms: Optional[List[str]] = None
+    channels: Optional[List[str]] = None
+    niche: Optional[str] = Field(default=None, max_length=80)
+    region: Optional[str] = Field(default=None, max_length=10)
+    languages: Optional[List[str]] = None
+    keywords: Optional[List[str]] = None
+    excluded_keywords: Optional[List[str]] = None
+    min_trend_score: Optional[int] = Field(default=None, ge=1, le=100)
+    min_rights_status: Optional[str] = None
+    processing_workflow: Optional[str] = None
+    clip_count: Optional[int] = Field(default=None, ge=1, le=10)
+    daily_limit: Optional[int] = Field(default=None, ge=1, le=50)
+    schedule_cron: Optional[str] = None
+    max_concurrent_jobs: Optional[int] = Field(default=None, ge=1, le=10)
+
+
 class ToggleRuleRequest(BaseModel):
     enabled: bool
 
@@ -117,6 +137,40 @@ async def toggle_autopilot_rule(
     if not success:
         raise HTTPException(status_code=404, detail="Rule not found or access denied")
     return {"status": "success", "rule_id": rule_id, "enabled": body.enabled}
+
+
+@router.put("/rules/{rule_id}")
+async def update_autopilot_rule(
+    rule_id: str,
+    body: UpdateAutopilotRuleRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    config: Config = Depends(get_config),
+) -> Dict[str, Any]:
+    """Update an Autopilot rule with ownership validation."""
+    user_id = get_authenticated_user_id(request, config)
+    service = AutopilotService(db, config=config)
+    update_data = {k: v for k, v in body.model_dump().items() if v is not None}
+    updated = await service.update_rule(rule_id=rule_id, rule_data=update_data, user_id=user_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Rule not found or access denied")
+    return {"status": "success", "rule": updated}
+
+
+@router.delete("/rules/{rule_id}")
+async def delete_autopilot_rule(
+    rule_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    config: Config = Depends(get_config),
+) -> Dict[str, Any]:
+    """Delete an Autopilot rule with ownership validation."""
+    user_id = get_authenticated_user_id(request, config)
+    service = AutopilotService(db, config=config)
+    deleted = await service.delete_rule(rule_id=rule_id, user_id=user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Rule not found or access denied")
+    return {"status": "success", "rule_id": rule_id, "deleted": True}
 
 
 @router.post("/rules/{rule_id}/run")
