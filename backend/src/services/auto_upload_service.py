@@ -88,12 +88,11 @@ class AutoUploadService:
             return {"status": "error", "message": f"Clip {clip_id} not found", "posts": []}
 
         # Verify source rights before distributing
-        # 0. Check global social publishing feature gate
-        access = getattr(self.config, "social_publishing_access", None) or os.getenv("SOCIAL_PUBLISHING_ACCESS", "all")
-        if str(access).lower() in ("off", "false", "0"):
+        # 0. Check global social publishing feature gate and user access rollout
+        if not await self.social_service.has_access(user_id):
             return {
                 "status": "disabled",
-                "message": "Social publishing is currently disabled by administrator (SOCIAL_PUBLISHING_ACCESS=off).",
+                "message": "Social publishing is not enabled for this account.",
                 "clip_id": clip_id,
                 "posts": [],
             }

@@ -75,4 +75,24 @@ async def test_auto_upload_clip_feature_gate_disabled(monkeypatch):
     with patch("src.repositories.clip_repository.ClipRepository.get_clip_by_id", new=AsyncMock(return_value={"id": "clip-1", "task_id": "task-1"})):
         res = await service.auto_upload_clip("user-123", task_id="task-1", clip_id="clip-1")
         assert res["status"] == "disabled"
-        assert "disabled by administrator" in res["message"]
+        assert "not enabled for this account" in res["message"]
+
+
+@pytest.mark.asyncio
+async def test_auto_upload_clip_admins_rollout_gate(monkeypatch):
+    monkeypatch.setenv("SOCIAL_PUBLISHING_ACCESS", "admins")
+    db = AsyncMock()
+    # Non-admin user lookup returns is_admin=False
+    mock_row = MagicMock()
+    mock_row.is_admin = False
+    mock_row.email = "normal_user@example.com"
+    exec_mock = MagicMock()
+    exec_mock.fetchone.return_value = mock_row
+    db.execute.return_value = exec_mock
+
+    service = AutoUploadService(db=db)
+
+    with patch("src.repositories.clip_repository.ClipRepository.get_clip_by_id", new=AsyncMock(return_value={"id": "clip-1", "task_id": "task-1"})):
+        res = await service.auto_upload_clip("user-regular", task_id="task-1", clip_id="clip-1")
+        assert res["status"] == "disabled"
+        assert "not enabled for this account" in res["message"]

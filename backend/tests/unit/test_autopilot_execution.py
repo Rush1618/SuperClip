@@ -103,6 +103,34 @@ async def test_rights_evidence_validation():
     )
     assert registered_ref["source_id"] == "yt-123"
 
+    # Pending verification check: untrusted host goes to pending_verification
+    untrusted_reg = await service.register_source_rights(
+        user_id="u1",
+        source_id="yt-123",
+        platform="youtube",
+        rights_state="creator_authorized",
+        permission_evidence="https://untrusted-external-site.org/docs/agreement.pdf",
+    )
+    assert untrusted_reg["source_id"] == "yt-123"
+
+    # Publishing is blocked while verification is pending
+    pending_record = {
+        "id": "rights-pending",
+        "rights_state": "creator_authorized",
+        "permission_source": "manual_review_queue:untrusted-external-site.org:status:pending_verification",
+        "permitted_operations": ["analyze", "clip", "publish"],
+        "allowed_destinations": ["youtube"],
+    }
+    with patch.object(service, "get_source_rights", new=AsyncMock(return_value=pending_record)):
+        perm = await service.check_rights_permission(
+            source_id="yt-123",
+            platform="youtube",
+            operation="publish",
+            user_id="u1",
+        )
+        assert perm["allowed"] is False
+        assert "pending or rejected" in perm["reason"]
+
 
 @pytest.mark.asyncio
 async def test_autopilot_rule_enqueues_processing_job_and_persists_job_id():
