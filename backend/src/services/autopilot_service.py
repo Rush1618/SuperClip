@@ -350,6 +350,7 @@ class AutopilotService:
         from ..workers.job_queue import JobQueue
 
         RIGHTS_RANK = {
+            "owned": 5,
             "public_domain": 4,
             "licensed": 3,
             "creator_authorized": 2,
@@ -370,9 +371,10 @@ class AutopilotService:
                 continue
 
             item_lang = str(item.get("language") or item.get("lang") or "").lower().strip()
-            if rule_languages and item_lang and not any(l == item_lang or item_lang.startswith(l) for l in rule_languages):
-                rejected_reasons["language_mismatch"] = rejected_reasons.get("language_mismatch", 0) + 1
-                continue
+            if rule_languages:
+                if not item_lang or not any(l == item_lang or item_lang.startswith(l) for l in rule_languages):
+                    rejected_reasons["language_mismatch"] = rejected_reasons.get("language_mismatch", 0) + 1
+                    continue
 
             title_and_desc = f"{item.get('title', '')} {item.get('description', '')}".lower()
             if rule_keywords and not any(kw in title_and_desc for kw in rule_keywords):
@@ -451,8 +453,9 @@ class AutopilotService:
                         },
                     )
 
+                    processing_job_id = None
                     try:
-                        await JobQueue.enqueue_processing_job(
+                        processing_job_id = await JobQueue.enqueue_processing_job(
                             "process_video_task",
                             processing_workflow,
                             task_id,
@@ -469,11 +472,28 @@ class AutopilotService:
                             None,
                             "auto",
                         )
+                        # Persist processing_job_id on task source metadata for recovery & tracking
+                        await TaskRepository.save_source_metadata(
+                            self.db,
+                            task_id,
+                            {"processing_job_id": processing_job_id},
+                        )
+                        tasks_created += 1
+                        logger.info(
+                            "Autopilot rule %s created and enqueued task %s (job %s) for source %s",
+                            rule_id, task_id, processing_job_id, source_id
+                        )
                     except Exception as q_err:
-                        logger.warning("Could not enqueue autopilot task %s to worker: %s", task_id, q_err)
-
-                    tasks_created += 1
-                    logger.info("Autopilot rule %s created and enqueued task %s for source %s", rule_id, task_id, source_id)
+                        logger.error("Could not enqueue autopilot task %s to worker: %s", task_id, q_err)
+                        await TaskRepository.update_task_status(
+                            self.db,
+                            task_id,
+                            "error",
+                            progress=0,
+                            progress_message="Autopilot worker enqueue failed. Please retry this generation.",
+                            expected_statuses=["queued"],
+                        )
+                        rejected_reasons["worker_enqueue_failed"] = rejected_reasons.get("worker_enqueue_failed", 0) + 1
                 except Exception as task_err:
                     logger.warning("Failed to create autopilot task: %s", task_err)
 

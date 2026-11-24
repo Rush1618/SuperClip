@@ -233,10 +233,26 @@ class RightsService:
 
         if rights_state in ("creator_authorized", "licensed"):
             evidence = (permission_evidence or "").strip()
-            if not evidence or evidence.lower() in ("none", "null", "undefined", "creator_agreement"):
+            if not evidence or evidence.lower() in ("none", "null", "undefined", "creator_agreement", "test"):
                 raise ValueError(
                     f"Verifiable permission evidence (e.g. agreement URL, signed licensing reference, "
                     f"or channel authorization document) is required to register content under '{rights_state}'."
+                )
+
+            from urllib.parse import urlparse
+            import re
+
+            is_valid_url = False
+            parsed = urlparse(evidence)
+            if parsed.scheme in ("http", "https") and parsed.netloc and "." in parsed.netloc:
+                is_valid_url = True
+
+            is_valid_ref = bool(re.match(r"^(CONTRACT|LICENSE|AGREEMENT|AUTH|DOC|PERM)-[A-Za-z0-9_-]{4,}$", evidence, re.IGNORECASE))
+
+            if not is_valid_url and not is_valid_ref and len(evidence) < 12:
+                raise ValueError(
+                    f"Permission evidence must be a valid agreement URL (e.g. 'https://licenses.example.com/agreement.pdf') "
+                    f"or a verifiable reference identifier (e.g. 'CONTRACT-98214') to register content under '{rights_state}'."
                 )
 
         ops = permitted_operations or ["analyze", "clip", "publish"]

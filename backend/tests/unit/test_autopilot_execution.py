@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
@@ -55,7 +55,17 @@ async def test_rights_evidence_validation():
             permission_evidence="creator_agreement",
         )
 
-    # Valid verifiable evidence succeeds
+    # Random unstructured short string must be rejected
+    with pytest.raises(ValueError, match="Permission evidence must be a valid agreement URL"):
+        await service.register_source_rights(
+            user_id="u1",
+            source_id="yt-123",
+            platform="youtube",
+            rights_state="licensed",
+            permission_evidence="not_a_valid_ref",
+        )
+
+    # Valid verifiable URL evidence succeeds
     result_mock = MagicMock()
     result_mock.mappings().first.return_value = {
         "id": "rights-1",
@@ -73,9 +83,19 @@ async def test_rights_evidence_validation():
     )
     assert registered["source_id"] == "yt-123"
 
+    # Valid structured reference identifier succeeds
+    registered_ref = await service.register_source_rights(
+        user_id="u1",
+        source_id="yt-123",
+        platform="youtube",
+        rights_state="creator_authorized",
+        permission_evidence="CONTRACT-2026-X88",
+    )
+    assert registered_ref["source_id"] == "yt-123"
+
 
 @pytest.mark.asyncio
-async def test_autopilot_rule_enqueues_processing_job_to_worker():
+async def test_autopilot_rule_enqueues_processing_job_and_persists_job_id():
     db = AsyncMock()
     service = AutopilotService(db)
 
@@ -110,12 +130,14 @@ async def test_autopilot_rule_enqueues_processing_job_to_worker():
     active_count_res.scalar.return_value = 0
 
     exec_insert_res = MagicMock()
+    update_last_run_res = MagicMock()
 
     db.execute.side_effect = [
         rule_res,
         daily_count_res,
         active_count_res,
         exec_insert_res,
+        update_last_run_res,
     ]
 
     service.trending_service.fetch_worldwide_trending_videos = AsyncMock(
@@ -134,8 +156,8 @@ async def test_autopilot_rule_enqueues_processing_job_to_worker():
     service.rights_service.check_rights_permission = AsyncMock(
         return_value={
             "allowed": True,
-            "rights_state": "creator_authorized",
-            "reason": "Verified",
+            "rights_state": "owned",
+            "reason": "Verified owned content",
         }
     )
 
@@ -154,19 +176,28 @@ async def test_autopilot_rule_enqueues_processing_job_to_worker():
         assert create_kwargs["workflow_options"]["auto_upload"] is True
         assert create_kwargs["workflow_options"]["autopilot_rule_id"] == "rule-42"
 
-        mock_save_meta.assert_awaited_once_with(
-            db,
-            "task-999",
-            {
-                "autopilot_rule_id": "rule-42",
-                "discovered_title": "Quantum AI Breakthrough",
-                "discovered_platform": "youtube",
-                "discovered_source_id": "vid-12345",
-                "discovered_channel_id": "",
-                "virality_score": 92,
-                "rights_state": "creator_authorized",
-            },
-        )
+        # Check metadata calls: 1 for initial source info, 1 for processing_job_id
+        assert mock_save_meta.await_count == 2
+        mock_save_meta.assert_has_calls([
+            call(
+                db,
+                "task-999",
+                {
+                    "autopilot_rule_id": "rule-42",
+                    "discovered_title": "Quantum AI Breakthrough",
+                    "discovered_platform": "youtube",
+                    "discovered_source_id": "vid-12345",
+                    "discovered_channel_id": "",
+                    "virality_score": 92,
+                    "rights_state": "owned",
+                },
+            ),
+            call(
+                db,
+                "task-999",
+                {"processing_job_id": "job-555"},
+            ),
+        ])
 
         mock_enqueue.assert_awaited_once_with(
             "process_video_task",
@@ -184,6 +215,91 @@ async def test_autopilot_rule_enqueues_processing_job_to_worker():
             True,
             None,
             "auto",
+        )
+
+
+@pytest.mark.asyncio
+async def test_autopilot_queue_failure_marks_task_error():
+    db = AsyncMock()
+    service = AutopilotService(db)
+
+    rule_row = {
+        "id": "rule-fail",
+        "user_id": "u-user",
+        "team_id": None,
+        "name": "Queue Fail Rule",
+        "enabled": True,
+        "niche": "tech",
+        "region": "US",
+        "min_trend_score": 70,
+        "clip_count": 1,
+        "daily_limit": 5,
+        "max_concurrent_jobs": 2,
+        "processing_workflow": "highlights",
+        "sources": json.dumps(["youtube"]),
+        "channels": json.dumps([]),
+        "languages": json.dumps([]),
+        "keywords": json.dumps([]),
+        "excluded_keywords": json.dumps([]),
+        "min_rights_status": "creator_authorized",
+    }
+
+    rule_res = MagicMock()
+    rule_res.mappings().first.return_value = rule_row
+
+    daily_count_res = MagicMock()
+    daily_count_res.scalar.return_value = 0
+
+    active_count_res = MagicMock()
+    active_count_res.scalar.return_value = 0
+
+    exec_insert_res = MagicMock()
+    update_last_run_res = MagicMock()
+
+    db.execute.side_effect = [
+        rule_res,
+        daily_count_res,
+        active_count_res,
+        exec_insert_res,
+        update_last_run_res,
+    ]
+
+    service.trending_service.fetch_worldwide_trending_videos = AsyncMock(
+        return_value=[
+            {
+                "id": "vid-err",
+                "platform": "youtube",
+                "title": "Failing Enqueue Video",
+                "virality_score": 85,
+                "url": "https://www.youtube.com/watch?v=vid-err",
+            }
+        ]
+    )
+
+    service.rights_service.check_rights_permission = AsyncMock(
+        return_value={"allowed": True, "rights_state": "creator_authorized"}
+    )
+
+    with patch("src.repositories.source_repository.SourceRepository.create_source", new=AsyncMock(return_value="src-err")), \
+         patch("src.repositories.task_repository.TaskRepository.create_task", new=AsyncMock(return_value="task-err")), \
+         patch("src.repositories.task_repository.TaskRepository.save_source_metadata", new=AsyncMock()), \
+         patch("src.repositories.task_repository.TaskRepository.update_task_status", new=AsyncMock()) as mock_update_status, \
+         patch("src.workers.job_queue.JobQueue.enqueue_processing_job", new=AsyncMock(side_effect=RuntimeError("Redis connection refused"))):
+
+        res = await service.execute_rule("rule-fail")
+
+        assert res["status"] == "completed"
+        # Since queue failed, tasks_created MUST NOT be incremented
+        assert res["tasks_created"] == 0
+        assert res["rejected_reasons"].get("worker_enqueue_failed") == 1
+
+        mock_update_status.assert_awaited_once_with(
+            db,
+            "task-err",
+            "error",
+            progress=0,
+            progress_message="Autopilot worker enqueue failed. Please retry this generation.",
+            expected_statuses=["queued"],
         )
 
 
@@ -223,26 +339,30 @@ async def test_autopilot_rule_filters_non_matching_candidates():
     active_count_res.scalar.return_value = 0
 
     exec_insert_res = MagicMock()
+    update_last_run_res = MagicMock()
 
     db.execute.side_effect = [
         rule_res,
         daily_count_res,
         active_count_res,
         exec_insert_res,
+        update_last_run_res,
     ]
 
     service.trending_service.fetch_worldwide_trending_videos = AsyncMock(
         return_value=[
             # 1. Platform mismatch (twitch instead of youtube)
-            {"id": "c1", "platform": "twitch", "title": "Great gameplay", "virality_score": 90, "channel_id": "@official_dev"},
+            {"id": "c1", "platform": "twitch", "title": "Great gameplay", "virality_score": 90, "channel_id": "@official_dev", "language": "en"},
             # 2. Channel mismatch
-            {"id": "c2", "platform": "youtube", "title": "Epic gameplay", "virality_score": 90, "channel_id": "@other_channel"},
+            {"id": "c2", "platform": "youtube", "title": "Epic gameplay", "virality_score": 90, "channel_id": "@other_channel", "language": "en"},
             # 3. Missing keyword ("gameplay" not in title)
-            {"id": "c3", "platform": "youtube", "title": "Vlog episode 4", "virality_score": 90, "channel_id": "@official_dev"},
+            {"id": "c3", "platform": "youtube", "title": "Vlog episode 4", "virality_score": 90, "channel_id": "@official_dev", "language": "en"},
             # 4. Excluded keyword present ("sponsor")
-            {"id": "c4", "platform": "youtube", "title": "Pro gameplay with sponsor", "virality_score": 90, "channel_id": "@official_dev"},
+            {"id": "c4", "platform": "youtube", "title": "Pro gameplay with sponsor", "virality_score": 90, "channel_id": "@official_dev", "language": "en"},
             # 5. Score below threshold (75 < 80)
-            {"id": "c5", "platform": "youtube", "title": "Clean gameplay", "virality_score": 75, "channel_id": "@official_dev"},
+            {"id": "c5", "platform": "youtube", "title": "Clean gameplay", "virality_score": 75, "channel_id": "@official_dev", "language": "en"},
+            # 6. Missing language metadata (must not pass rule restricted to "en")
+            {"id": "c6", "platform": "youtube", "title": "Clean gameplay", "virality_score": 90, "channel_id": "@official_dev", "language": ""},
         ]
     )
 
@@ -261,6 +381,7 @@ async def test_autopilot_rule_filters_non_matching_candidates():
         assert reasons.get("keywords_missing") == 1
         assert reasons.get("excluded_keyword_present") == 1
         assert reasons.get("score_below_threshold") == 1
+        assert reasons.get("language_mismatch") == 1
 
 
 @pytest.mark.asyncio
