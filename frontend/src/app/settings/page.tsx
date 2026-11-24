@@ -83,6 +83,8 @@ interface AutopilotRuleItem {
   name: string;
   enabled: boolean;
   niche: string;
+  region?: string;
+  schedule_cron?: string;
   min_trend_score: number;
   clip_count: number;
   daily_limit: number;
@@ -104,6 +106,8 @@ interface PublishingQueueItem {
   clip_id: string;
   provider: string;
   status: string;
+  title?: string;
+  account_name?: string;
   external_url?: string;
   last_error?: string;
   created_at: string;
@@ -115,6 +119,7 @@ interface SourceRightsItem {
   platform: string;
   rights_state: string;
   permission_source?: string;
+  permitted_operations?: string[];
   created_at?: string;
 }
 
