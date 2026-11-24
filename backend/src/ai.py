@@ -1673,7 +1673,12 @@ async def _analyze_transcript_windows(
 
     Raises the first window error only when no window produced an analysis.
     """
-    semaphore = asyncio.Semaphore(ANALYSIS_WINDOW_CONCURRENCY)
+    runtime_config = get_config()
+    provider, _ = _split_llm_name(runtime_config.llm)
+    # Sequential execution for local Ollama avoids GPU VRAM saturation/timeouts.
+    # Cloud providers continue using concurrent window processing.
+    window_concurrency = 1 if provider == "ollama" else ANALYSIS_WINDOW_CONCURRENCY
+    semaphore = asyncio.Semaphore(window_concurrency)
 
     async def run_window(window: Dict[str, Any]) -> TranscriptAnalysis:
         async with semaphore:

@@ -8,7 +8,18 @@ Write-Host "==========================================" -ForegroundColor Cyan
 # 1. Configure Ollama Environment
 $env:OLLAMA_MODELS = "C:\Rushabh\.models"
 $env:OLLAMA_HOST = "0.0.0.0:11434"
-$ollamaExe = "C:\Users\singh\AppData\Local\Programs\Ollama\ollama.exe"
+
+# Potential Ollama executable locations
+$candidatePaths = @(
+    "C:\Users\singh\AppData\Local\Programs\Ollama\ollama.exe",
+    "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe",
+    "$env:ProgramFiles\Ollama\ollama.exe"
+)
+$ollamaExe = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $ollamaExe) {
+    $cmd = Get-Command ollama -ErrorAction SilentlyContinue
+    if ($cmd) { $ollamaExe = $cmd.Source }
+}
 
 # 2. Check and start Ollama if not already running
 Write-Host "`n[1/3] Checking Ollama service..." -ForegroundColor Yellow
@@ -21,15 +32,33 @@ try {
 }
 
 if (-not $ollamaRunning) {
-    if (Test-Path $ollamaExe) {
-        Write-Host "Starting Ollama in background with RTX GPU acceleration..." -ForegroundColor Green
+    if ($ollamaExe -and (Test-Path $ollamaExe)) {
+        Write-Host "Ollama is not running. Automatically starting Ollama in background (RTX acceleration enabled)..." -ForegroundColor Green
         Start-Process -FilePath $ollamaExe -ArgumentList "serve" -WindowStyle Hidden
-        Start-Sleep -Seconds 3
+        
+        # Poll health endpoint until responsive (up to 20 seconds)
+        $ready = $false
+        for ($i = 1; $i -le 10; $i++) {
+            Start-Sleep -Seconds 2
+            try {
+                $res = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -TimeoutSec 2 -ErrorAction SilentlyContinue
+                if ($res) {
+                    $ready = $true
+                    break
+                }
+            } catch {}
+            Write-Host "  Waiting for Ollama to become ready ($($i * 2)s)..." -ForegroundColor Gray
+        }
+        if ($ready) {
+            Write-Host "Ollama service started and responding at http://localhost:11434" -ForegroundColor Green
+        } else {
+            Write-Warning "Ollama process launched but endpoint not yet responding. Proceeding with container startup..."
+        }
     } else {
-        Write-Warning "Ollama executable not found at $ollamaExe. Please start Ollama manually."
+        Write-Warning "Ollama executable not found. Please start Ollama manually if running local models."
     }
 } else {
-    Write-Host "Ollama is already running and reachable." -ForegroundColor Green
+    Write-Host "Ollama is already running and reachable at http://localhost:11434" -ForegroundColor Green
 }
 
 # 3. Start SupoClip Docker containers
