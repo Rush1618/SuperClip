@@ -140,16 +140,53 @@ class AutoUploadService:
                 "posts": [],
             }
 
-        # Filter by requested platforms if provided
+        # Enforce persistent automation preferences (virality threshold, daily limits, platforms)
+        from .automation_service import AutomationService
+        pref = await AutomationService(self.db).get_preferences(user_id, team_id=team_id)
+
+        min_virality = int(pref.get("min_virality_score", 0)) if pref else 0
+        clip_score = int(clip.get("virality_score") or 0)
+        if min_virality > 0 and clip_score < min_virality:
+            return {
+                "status": "below_virality_threshold",
+                "message": f"Clip virality score ({clip_score}) is below configured minimum threshold ({min_virality}).",
+                "clip_id": clip_id,
+                "posts": [],
+            }
+
+        max_daily = int(pref.get("max_daily_posts", 10)) if pref else 10
+        daily_posts_res = await self.db.execute(
+            text("""
+                SELECT COUNT(*) FROM publishing_intents
+                WHERE (user_id = :user_id OR (:team_id IS NOT NULL AND team_id = :team_id))
+                  AND status IN ('queued', 'published')
+                  AND created_at >= CURRENT_DATE
+            """),
+            {"user_id": user_id, "team_id": team_id},
+        )
+        today_posts = int(daily_posts_res.scalar() or 0)
+        if today_posts >= max_daily:
+            return {
+                "status": "daily_limit_reached",
+                "message": f"Daily publishing limit ({max_daily} posts) reached for today.",
+                "clip_id": clip_id,
+                "posts": [],
+            }
+
+        # Filter by requested or configured platforms
+        effective_platforms = platforms
+        if not effective_platforms and pref and pref.get("selected_platforms"):
+            effective_platforms = pref.get("selected_platforms")
+
         target_accounts = valid_accounts
-        if platforms and len(platforms) > 0 and "all" not in platforms:
-            plat_set = {p.lower().strip() for p in platforms}
+        if effective_platforms and len(effective_platforms) > 0 and "all" not in effective_platforms:
+            plat_set = {p.lower().strip() for p in effective_platforms}
             target_accounts = [acc for acc in valid_accounts if acc["provider"].lower() in plat_set]
 
         if not target_accounts:
             return {
                 "status": "no_matching_accounts",
-                "message": f"No active connections found for platforms: {platforms}",
+                "message": f"No active connections found for platforms: {effective_platforms or 'all'}",
                 "clip_id": clip_id,
                 "posts": [],
             }
@@ -160,6 +197,7 @@ class AutoUploadService:
         # Get viral learning hooks to optimize captions
         memory = get_learning_memory()
         viral_tags = memory.get("trending_hashtags", ["#viral", "#shorts", "#trending", "#fyp"])
+        privacy_overrides = pref.get("account_privacy_overrides") or {} if pref else {}
 
         for acc in target_accounts:
             provider = acc["provider"]
@@ -171,18 +209,23 @@ class AutoUploadService:
                 {"k": idempotency_key},
             )
             row = existing_intent.mappings().first()
+            intent_id = None
             if row:
-                logger.info("Publishing intent already exists for clip %s to %s (status: %s)", clip_id, provider, row["status"])
-                created_posts.append({
-                    "post_id": row.get("social_post_id") or row["id"],
-                    "intent_id": row["id"],
-                    "provider": provider,
-                    "account_name": acc.get("account_name") or acc.get("username"),
-                    "status": row["status"],
-                    "external_url": row.get("external_url"),
-                    "title": clip.get("title", "Clip"),
-                })
-                continue
+                if row["status"] != "pending" or row.get("social_post_id"):
+                    logger.info("Publishing intent already active for clip %s to %s (status: %s)", clip_id, provider, row["status"])
+                    created_posts.append({
+                        "post_id": row.get("social_post_id") or row["id"],
+                        "intent_id": row["id"],
+                        "provider": provider,
+                        "account_name": acc.get("account_name") or acc.get("username"),
+                        "status": row["status"],
+                        "external_url": row.get("external_url"),
+                        "title": clip.get("title", "Clip"),
+                    })
+                    continue
+                else:
+                    logger.info("Recovering orphaned pending publishing intent %s for clip %s to %s", row["id"], clip_id, provider)
+                    intent_id = row["id"]
 
             try:
                 # 1. Generate optimized caption & title for platform
@@ -208,65 +251,66 @@ class AutoUploadService:
                     logger.debug("Automatic caption draft error on %s, using fallback: %s", provider, cap_err)
                     draft_caption = f"{draft_title}\n\n{' '.join(hashtags)}"
 
-                # TikTok unaudited apps enforce private visibility
-                effective_privacy = privacy_level
+                # Enforce privacy overrides per platform / account
+                effective_privacy = privacy_overrides.get(provider) or pref.get("default_privacy_level") or privacy_level
                 if provider == "tiktok" and effective_privacy == "public":
                     effective_privacy = "private"
 
-                # 2. Record transactional publishing intent in PostgreSQL with race protection
-                intent_id = str(uuid4())
-                insert_res = await self.db.execute(
-                    text(
-                        """
-                        INSERT INTO publishing_intents (
-                            id, user_id, team_id, task_id, clip_id, social_account_id,
-                            provider, idempotency_key, status, title, caption, hashtags,
-                            privacy_level, created_at, updated_at
-                        ) VALUES (
-                            :id, :user_id, :team_id, :task_id, :clip_id, :social_account_id,
-                            :provider, :idempotency_key, 'pending', :title, :caption, :hashtags,
-                            :privacy_level, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                        )
-                        ON CONFLICT (idempotency_key) DO NOTHING
-                        RETURNING id
-                        """
-                    ),
-                    {
-                        "id": intent_id,
-                        "user_id": user_id,
-                        "team_id": team_id,
-                        "task_id": task_id,
-                        "clip_id": clip_id,
-                        "social_account_id": acc["id"],
-                        "provider": provider,
-                        "idempotency_key": idempotency_key,
-                        "title": draft_title,
-                        "caption": draft_caption,
-                        "hashtags": hashtags,
-                        "privacy_level": effective_privacy,
-                    },
-                )
-                await self.db.commit()
-                inserted_row = insert_res.fetchone()
-
-                if not inserted_row:
-                    # Concurrent insert handled by another worker
-                    existing_intent = await self.db.execute(
-                        text("SELECT id, social_post_id, status, external_url FROM publishing_intents WHERE idempotency_key = :k"),
-                        {"k": idempotency_key},
-                    )
-                    row = existing_intent.mappings().first()
-                    if row:
-                        created_posts.append({
-                            "post_id": row.get("social_post_id") or row["id"],
-                            "intent_id": row["id"],
+                # 2. Record transactional publishing intent in PostgreSQL with race protection if not recovered
+                if not intent_id:
+                    intent_id = str(uuid4())
+                    insert_res = await self.db.execute(
+                        text(
+                            """
+                            INSERT INTO publishing_intents (
+                                id, user_id, team_id, task_id, clip_id, social_account_id,
+                                provider, idempotency_key, status, title, caption, hashtags,
+                                privacy_level, created_at, updated_at
+                            ) VALUES (
+                                :id, :user_id, :team_id, :task_id, :clip_id, :social_account_id,
+                                :provider, :idempotency_key, 'pending', :title, :caption, :hashtags,
+                                :privacy_level, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                            )
+                            ON CONFLICT (idempotency_key) DO NOTHING
+                            RETURNING id
+                            """
+                        ),
+                        {
+                            "id": intent_id,
+                            "user_id": user_id,
+                            "team_id": team_id,
+                            "task_id": task_id,
+                            "clip_id": clip_id,
+                            "social_account_id": acc["id"],
                             "provider": provider,
-                            "account_name": acc.get("account_name") or acc.get("username"),
-                            "status": row["status"],
-                            "external_url": row.get("external_url"),
+                            "idempotency_key": idempotency_key,
                             "title": draft_title,
-                        })
-                    continue
+                            "caption": draft_caption,
+                            "hashtags": hashtags,
+                            "privacy_level": effective_privacy,
+                        },
+                    )
+                    await self.db.commit()
+                    inserted_row = insert_res.fetchone()
+
+                    if not inserted_row:
+                        # Concurrent insert handled by another worker
+                        existing_intent = await self.db.execute(
+                            text("SELECT id, social_post_id, status, external_url FROM publishing_intents WHERE idempotency_key = :k"),
+                            {"k": idempotency_key},
+                        )
+                        row = existing_intent.mappings().first()
+                        if row:
+                            created_posts.append({
+                                "post_id": row.get("social_post_id") or row["id"],
+                                "intent_id": row["id"],
+                                "provider": provider,
+                                "account_name": acc.get("account_name") or acc.get("username"),
+                                "status": row["status"],
+                                "external_url": row.get("external_url"),
+                                "title": draft_title,
+                            })
+                        continue
 
                 # 3. Create the post record and queue it for publishing
                 post = await self.social_service.create_post(
@@ -282,7 +326,7 @@ class AutoUploadService:
                     team_id=team_id,
                 )
 
-                # Link social_post_id and mark status queued on intent
+                # Link social_post_id and mark status queued on intent atomically
                 await self.db.execute(
                     text("""
                         UPDATE publishing_intents
@@ -305,6 +349,15 @@ class AutoUploadService:
 
             except Exception as post_err:
                 logger.warning("Failed to auto-upload clip %s to %s: %s", clip_id, provider, post_err)
+                if intent_id:
+                    try:
+                        await self.db.execute(
+                            text("UPDATE publishing_intents SET status = 'failed', last_error = :err WHERE id = :id"),
+                            {"id": intent_id, "err": str(post_err)[:500]},
+                        )
+                        await self.db.commit()
+                    except Exception:
+                        pass
                 errors.append({"provider": provider, "error": str(post_err)})
 
         return {

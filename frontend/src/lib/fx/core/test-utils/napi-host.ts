@@ -132,7 +132,7 @@ export interface NapiHostOptions {
 
 export interface NapiHost extends FxHost { measure(text: string, family: string, px: number): number }
 
-let sharedMeasureCtx: any = null;
+let sharedMeasureCtx: ReturnType<ReturnType<typeof createCanvas>["getContext"]> | null = null;
 
 export function napiHost(options: NapiHostOptions = {}): NapiHost {
   registerFxFonts();

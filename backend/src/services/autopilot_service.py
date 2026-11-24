@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -21,6 +21,70 @@ from .trending_service import TrendingService
 from ..config import Config, get_config
 
 logger = logging.getLogger(__name__)
+
+
+def is_cron_due(cron_expr: str, last_run_at: Optional[datetime], now: Optional[datetime] = None) -> bool:
+    """Evaluate if a 5-part cron schedule has ticked since the last run."""
+    if last_run_at is None:
+        return True
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if last_run_at.tzinfo is None:
+        last_run_at = last_run_at.replace(tzinfo=timezone.utc)
+
+    delta = (now - last_run_at).total_seconds()
+    if delta < 60:
+        return False
+    if delta >= 86400:
+        return True
+
+    fields = cron_expr.strip().split()
+    if len(fields) != 5:
+        return delta >= 7200  # Default 2-hour interval
+
+    def match_field(val: int, pattern: str) -> bool:
+        if pattern == "*":
+            return True
+        for part in pattern.split(","):
+            if part.startswith("*/"):
+                try:
+                    step = int(part[2:])
+                    if step > 0 and val % step == 0:
+                        return True
+                except ValueError:
+                    pass
+            elif "-" in part:
+                try:
+                    start, end = map(int, part.split("-"))
+                    if start <= val <= end:
+                        return True
+                except ValueError:
+                    pass
+            else:
+                try:
+                    if int(part) == val:
+                        return True
+                except ValueError:
+                    pass
+        return False
+
+    current = now.replace(second=0, microsecond=0)
+    cutoff = last_run_at.replace(second=0, microsecond=0)
+    minutes_checked = 0
+    while current > cutoff and minutes_checked < 1440:
+        cron_dow = (current.weekday() + 1) % 7
+        if (
+            match_field(current.minute, fields[0])
+            and match_field(current.hour, fields[1])
+            and match_field(current.day, fields[2])
+            and match_field(current.month, fields[3])
+            and match_field(cron_dow, fields[4])
+        ):
+            return True
+        current -= timedelta(minutes=1)
+        minutes_checked += 1
+
+    return False
 
 
 class AutopilotService:
@@ -176,7 +240,6 @@ class AutopilotService:
             rule_res = await self.db.execute(
                 text("SELECT * FROM autopilot_rules WHERE id = :id"), {"id": rule_id}
             )
-        )
         rule = rule_res.mappings().first()
         if not rule or not rule["enabled"]:
             return {"status": "skipped", "reason": "Rule not found or disabled", "rule_id": rule_id}
@@ -187,6 +250,44 @@ class AutopilotService:
         region = rule["region"]
         min_score = rule["min_trend_score"]
         clip_count = rule["clip_count"]
+        daily_limit = int(rule.get("daily_limit") or 5)
+        max_concurrent = int(rule.get("max_concurrent_jobs") or 2)
+
+        # Enforce rule daily task limit across the actual day
+        daily_count_res = await self.db.execute(
+            text("""
+                SELECT COALESCE(SUM(tasks_created), 0)
+                FROM autopilot_executions
+                WHERE rule_id = :rule_id AND created_at >= CURRENT_DATE
+            """),
+            {"rule_id": rule_id},
+        )
+        tasks_created_today = int(daily_count_res.scalar() or 0)
+        remaining_daily_quota = max(0, daily_limit - tasks_created_today)
+        if remaining_daily_quota <= 0:
+            return {
+                "status": "skipped",
+                "reason": f"Daily limit reached ({tasks_created_today}/{daily_limit} tasks today)",
+                "rule_id": rule_id,
+            }
+
+        # Enforce concurrency limit for active tasks created by this rule
+        active_res = await self.db.execute(
+            text("""
+                SELECT COUNT(*)
+                FROM tasks
+                WHERE (workflow_options->>'autopilot_rule_id') = :rule_id
+                  AND status IN ('queued', 'processing', 'downloading', 'rendering')
+            """),
+            {"rule_id": rule_id},
+        )
+        active_count = int(active_res.scalar() or 0)
+        if active_count >= max_concurrent:
+            return {
+                "status": "skipped",
+                "reason": f"Concurrency limit reached ({active_count}/{max_concurrent} active jobs)",
+                "rule_id": rule_id,
+            }
 
         # 1. Discover potential sources from trending connectors
         candidates = await self.trending_service.fetch_worldwide_trending_videos(
@@ -200,6 +301,9 @@ class AutopilotService:
         tasks_created = 0
         rejected_reasons: Dict[str, int] = {}
 
+        from ..repositories.source_repository import SourceRepository
+        from ..repositories.task_repository import TaskRepository
+
         for item in candidates:
             score = item.get("virality_score", 0)
             if score < min_score:
@@ -208,6 +312,7 @@ class AutopilotService:
 
             source_id = item.get("id") or item.get("video_id")
             platform = item.get("platform", "youtube")
+            channel_id = item.get("channel_id") or item.get("channel")
 
             # 2. Check rights & authorization
             rights = await self.rights_service.check_rights_permission(
@@ -216,27 +321,33 @@ class AutopilotService:
                 operation="publish",
                 user_id=user_id,
                 team_id=team_id,
+                channel_id=channel_id,
             )
 
             if not rights["allowed"]:
                 reason_key = rights.get("rights_state", "unauthorized")
                 rejected_reasons[f"rights_{reason_key}"] = rejected_reasons.get(f"rights_{reason_key}", 0) + 1
-                # Unauthorized content is indexed for metadata display but blocked from auto-clipping/redistribution
                 continue
 
             eligible_sources += 1
 
-            # 3. Create task if daily limit not exceeded
-            if tasks_created < rule["daily_limit"]:
-                from ..repositories.task_repository import TaskRepository
+            # 3. Create task if within daily quota and active concurrency budget
+            if tasks_created < remaining_daily_quota and (active_count + tasks_created) < max_concurrent:
                 try:
-                    task = await TaskRepository.create_task(
+                    raw_url = item.get("url") or f"https://www.youtube.com/watch?v={source_id}"
+                    source_title = item.get("title", "Autopilot Clip")
+                    source_record_id = await SourceRepository.create_source(
+                        self.db,
+                        source_type=platform,
+                        title=source_title,
+                        url=raw_url,
+                    )
+                    task_id = await TaskRepository.create_task(
                         self.db,
                         user_id=user_id,
-                        source_url=item.get("url") or f"https://www.youtube.com/watch?v={source_id}",
-                        source_title=item.get("title", "Autopilot Clip"),
-                        source_type=platform,
-                        workflow=rule["processing_workflow"],
+                        source_id=source_record_id,
+                        status="queued",
+                        workflow=rule.get("processing_workflow") or "highlights",
                         team_id=team_id,
                         workflow_options={
                             "auto_upload": True,
@@ -245,7 +356,7 @@ class AutopilotService:
                         },
                     )
                     tasks_created += 1
-                    logger.info("Autopilot rule %s created task %s for source %s", rule_id, task["id"], source_id)
+                    logger.info("Autopilot rule %s created task %s for source %s", rule_id, task_id, source_id)
                 except Exception as task_err:
                     logger.warning("Failed to create autopilot task: %s", task_err)
 
@@ -325,24 +436,31 @@ class AutopilotService:
 
     @classmethod
     async def execute_due_rules(cls, db: AsyncSession) -> List[Dict[str, Any]]:
-        """Query enabled autopilot rules and execute eligible candidates."""
+        """Query enabled autopilot rules and execute eligible candidates whose schedules are due."""
         service = cls(db)
+        now = datetime.now(timezone.utc)
         query = text(
             """
-            SELECT id, user_id, team_id
+            SELECT id, user_id, team_id, schedule_cron, last_run_at
             FROM autopilot_rules
             WHERE enabled = true
             ORDER BY last_run_at ASC NULLS FIRST
-            LIMIT 5
             """
         )
         result = await db.execute(query)
         rows = result.fetchall()
         executed = []
         for row in rows:
+            schedule_cron = getattr(row, "schedule_cron", "0 */2 * * *")
+            last_run_at = getattr(row, "last_run_at", None)
+            if not is_cron_due(schedule_cron, last_run_at, now):
+                continue
+
             try:
                 res = await service.execute_rule(row.id, user_id=row.user_id, team_id=row.team_id)
                 executed.append(res)
+                if len(executed) >= 5:
+                    break
             except Exception as e:
                 logger.error("Error executing autopilot rule %s: %s", row.id, e)
         return executed

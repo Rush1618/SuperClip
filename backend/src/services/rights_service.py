@@ -50,8 +50,9 @@ class RightsService:
         platform: str = "youtube",
         user_id: Optional[str] = None,
         team_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Retrieve the authoritative rights record for a given source."""
+        """Retrieve the authoritative rights record for a given source or creator channel."""
         query = text(
             """
             SELECT id, user_id, team_id, source_id, platform, creator_identity,
@@ -59,7 +60,12 @@ class RightsService:
                    permitted_operations, allowed_destinations, expires_at, revoked_at,
                    created_at, updated_at
             FROM source_rights
-            WHERE source_id = :source_id AND platform = :platform
+            WHERE platform = :platform
+              AND (
+                source_id = :source_id
+                OR creator_identity = :source_id
+                OR (:channel_id IS NOT NULL AND (source_id = :channel_id OR creator_identity = :channel_id))
+              )
               AND (
                 (:user_id IS NOT NULL AND user_id = :user_id)
                 OR (:team_id IS NOT NULL AND team_id = :team_id)
@@ -76,6 +82,7 @@ class RightsService:
                 "platform": platform,
                 "user_id": user_id,
                 "team_id": team_id,
+                "channel_id": channel_id,
             },
         )
         row = result.mappings().first()
@@ -90,13 +97,18 @@ class RightsService:
         user_id: Optional[str] = None,
         team_id: Optional[str] = None,
         target_destination: Optional[str] = None,
+        channel_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Evaluate whether the requested operation is legally permitted.
         Returns a structured decision: {"allowed": bool, "reason": str, "rights_state": str}.
         """
         record = await self.get_source_rights(
-            source_id, platform=platform, user_id=user_id, team_id=team_id
+            source_id,
+            platform=platform,
+            user_id=user_id,
+            team_id=team_id,
+            channel_id=channel_id,
         )
 
         now = datetime.now(timezone.utc)
@@ -218,6 +230,13 @@ class RightsService:
 
         if rights_state not in RIGHTS_STATES:
             raise ValueError(f"Invalid rights_state '{rights_state}'. Allowed: {sorted(RIGHTS_STATES)}")
+
+        if rights_state in ("creator_authorized", "licensed"):
+            if not permission_source and not permission_evidence:
+                raise ValueError(
+                    f"Verifiable permission evidence or source reference (e.g. agreement ID, creator license URL, "
+                    f"or written authorization) is required to register content under '{rights_state}'."
+                )
 
         ops = permitted_operations or ["analyze", "clip", "publish"]
         dests = allowed_destinations or ["youtube", "tiktok", "instagram"]

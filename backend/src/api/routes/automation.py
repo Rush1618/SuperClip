@@ -51,6 +51,11 @@ async def get_automation_preferences(
 ) -> Dict[str, Any]:
     """Retrieve persistent automation preferences for the user or workspace."""
     user_id = get_authenticated_user_id(request, config)
+    if team_id:
+        from ...repositories.team_repository import TeamRepository
+        if not await TeamRepository.is_member(db, team_id, user_id):
+            raise HTTPException(status_code=403, detail="Not a member of this team")
+
     service = AutomationService(db)
     return await service.get_preferences(user_id=user_id, team_id=team_id)
 
@@ -64,8 +69,13 @@ async def update_automation_preferences(
 ) -> Dict[str, Any]:
     """Update persistent automation preferences."""
     user_id = get_authenticated_user_id(request, config)
-    service = AutomationService(db)
     updates = body.model_dump(exclude_unset=True)
     team_id = updates.pop("team_id", None)
+    if team_id:
+        from ...repositories.team_repository import TeamRepository
+        if not await TeamRepository.is_member(db, team_id, user_id):
+            raise HTTPException(status_code=403, detail="Not a member of this team")
+
+    service = AutomationService(db)
     updated = await service.update_preferences(user_id=user_id, updates=updates, team_id=team_id)
     return {"status": "success", "preferences": updated}
