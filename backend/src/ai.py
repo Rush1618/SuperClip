@@ -671,6 +671,11 @@ def _build_transcript_model(
             base_url=runtime_config.resolve_ollama_base_url(),
             api_key=runtime_config.ollama_api_key,
         ),
+        settings={
+            "num_ctx": 16384,
+            "num_predict": 4096,
+            "max_tokens": 4096,
+        },
     )
 
 
