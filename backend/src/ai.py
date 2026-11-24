@@ -700,6 +700,7 @@ def get_transcript_agent(clip_length: str = "auto") -> Agent[None, TranscriptAna
             model=_build_transcript_model(runtime_config),
             output_type=NativeOutput(TranscriptAnalysis, strict=True) if _uses_native_output(runtime_config.llm) else TranscriptAnalysis,
             system_prompt=build_transcript_system_prompt(clip_length),
+            model_settings={"max_tokens": 8192},
             # Some local Ollama/OpenAI-compatible endpoints can return formatted
             # prose before settling on schema-valid JSON. Keep retries limited
             # while still allowing enough repair attempts for local models.
@@ -786,6 +787,7 @@ def get_rerank_agent() -> Agent[None, CandidateRanking]:
             model=_build_transcript_model(runtime_config, model_name),
             output_type=NativeOutput(CandidateRanking, strict=True) if _uses_native_output(model_name) else CandidateRanking,
             system_prompt=rerank_prompt,
+            model_settings={"max_tokens": 8192},
             output_retries=2,
         )
         _rerank_agent_signature = signature
@@ -860,6 +862,7 @@ def get_broll_agent() -> Agent[None, BRollPlan]:
             model=_build_transcript_model(runtime_config, model_name),
             output_type=NativeOutput(BRollPlan, strict=True) if _uses_native_output(model_name) else BRollPlan,
             system_prompt=broll_plan_system_prompt,
+            model_settings={"max_tokens": 4096},
             output_retries=2,
         )
         _broll_agent_signature = signature
@@ -1367,7 +1370,7 @@ async def _run_transcript_analysis(
         async with asyncio.timeout(timeout_seconds):
             for attempt in range(1, TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS + 1):
                 try:
-                    result = await agent.run(prompt)
+                    result = await agent.run(prompt, model_settings={"max_tokens": 8192})
                     if hasattr(result, "response"):
                         logger.info("AI analysis completed using model %s", result.response.model_name)
                     return result
