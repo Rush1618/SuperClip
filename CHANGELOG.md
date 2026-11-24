@@ -4,6 +4,12 @@ What changed in SupoClip for people using the product. Newest dates are first.
 
 Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
 
+## 2026-11-24
+
+- **Fixed:** Autopilot rule dispatching now correctly enqueues video processing jobs to the background worker pool, verifies channel permissions against registered source rights, and enforces candidate keyword and language filters. ([#550](https://github.com/FujiwaraChoki/supoclip/pull/550))
+- **Fixed:** Autonomous social publishing now checks task workflow options on completion, handles source rights resolution from external video identifiers, and synchronizes transactional publishing intents with social post delivery statuses. ([#550](https://github.com/FujiwaraChoki/supoclip/pull/550))
+- **Improved:** The Settings Control Centre requires verifiable permission evidence when registering source rights, and telemetry reporting properly reflects GPU device availability without runtime type errors. ([#550](https://github.com/FujiwaraChoki/supoclip/pull/550))
+
 ## 2026-11-23
 
 - **New:** Autonomous autopilot discovery and clipping engine. Configure scheduled discovery rules by niche, min virality threshold, and rights checks, with recurring execution on the background maintenance worker. ([#550](https://github.com/FujiwaraChoki/supoclip/pull/550))

@@ -39,7 +39,7 @@ import { UpgradeThankYou } from "@/components/billing/upgrade-thank-you";
 import { toast } from "sonner";
 import { track } from "@/lib/datafast";
 import Link from "next/link";
-import { Activity, AlertCircle, Bot, Check, CheckCircle2, ChevronRight, Clock, Compass, Cpu, CreditCard, ExternalLink, HardDrive, Info, Languages, Layers, Loader2, Mail, Megaphone, Mic, Play, RefreshCw, Send, Share2, ShieldCheck, Sparkles, Type, Users, Volume2, XCircle, Zap } from "lucide-react";
+import { Activity, AlertCircle, Bot, Check, ChevronRight, Clock, Compass, Cpu, CreditCard, ExternalLink, Info, Languages, Layers, Loader2, Mail, Megaphone, Mic, Play, RefreshCw, Send, Share2, ShieldCheck, Sparkles, Type, Users, Volume2, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DEFAULT_SITE_URL, GITHUB_URL } from "@/lib/site";
 import { FontSelectOption, type FontOption } from "@/components/font-select-option";
@@ -56,13 +56,26 @@ interface UserPreferences {
   notifyOnPublish: boolean;
 }
 
+interface GpuDevice {
+  name: string;
+  total_vram_mb?: number;
+  free_vram_mb?: number;
+  utilization_percent?: number;
+}
+
+interface GpuInfo {
+  cuda_available: boolean;
+  gpus?: GpuDevice[];
+  driver_version?: string | null;
+}
+
 interface HardwareTelemetry {
-  gpu_available: boolean;
-  gpu_name?: string;
-  vram_total_mb?: number;
   cpu_cores?: number;
-  ram_available_mb?: number;
-  device?: string;
+  ram_total_gb?: number;
+  ram_available_gb?: number;
+  ram_usage_percent?: number;
+  gpu?: GpuInfo;
+  local_only_mode_active?: boolean;
 }
 
 interface AutopilotRuleItem {
@@ -158,6 +171,7 @@ export default function SettingsPage() {
   const [rightsSourceId, setRightsSourceId] = useState("");
   const [rightsPlatform, setRightsPlatform] = useState("youtube");
   const [rightsState, setRightsState] = useState("creator_authorized");
+  const [rightsEvidence, setRightsEvidence] = useState("");
 
   // Social Connections & Direct Post state
   const [socialConnections, setSocialConnections] = useState<SocialConnection[]>([]);
@@ -313,6 +327,10 @@ export default function SettingsPage() {
       toast.error("Please enter a source URL or channel ID");
       return;
     }
+    if (rightsState !== "personal_analysis_only" && !rightsEvidence.trim()) {
+      toast.error("Verifiable permission evidence (e.g. agreement URL, signed licensing reference, or authorization document) is required.");
+      return;
+    }
     try {
       const res = await fetch("/api/rights", {
         method: "POST",
@@ -321,14 +339,19 @@ export default function SettingsPage() {
           source_id: rightsSourceId.trim(),
           platform: rightsPlatform,
           rights_state: rightsState,
-          permission_source: "creator_agreement",
+          permission_source: rightsState === "owned" ? "creator_owned" : "creator_agreement",
+          permission_evidence: rightsEvidence.trim(),
         }),
       });
       if (res.ok) {
         toast.success("Source rights successfully registered!");
         setCreateRightsOpen(false);
         setRightsSourceId("");
+        setRightsEvidence("");
         void loadAutomationData();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.detail || "Failed to register rights");
       }
     } catch {
       toast.error("Failed to register rights");
@@ -2074,6 +2097,21 @@ export default function SettingsPage() {
                 </Select>
               </div>
             </div>
+
+            {rightsState !== "personal_analysis_only" && (
+              <div className="space-y-1.5">
+                <Label htmlFor="rights-evidence-input" className="text-xs font-semibold">
+                  Verifiable Permission Evidence (Agreement URL, License ID, or Written Ref)
+                </Label>
+                <Input
+                  id="rights-evidence-input"
+                  placeholder="e.g. https://license.example.com/agreement-123 or Signed Contract #458"
+                  value={rightsEvidence}
+                  onChange={(e) => setRightsEvidence(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+            )}
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2">

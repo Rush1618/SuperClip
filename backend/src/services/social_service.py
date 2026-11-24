@@ -1031,6 +1031,26 @@ class SocialService:
             published_at=datetime.now(timezone.utc),
             media_token_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
+        try:
+            await self.db.execute(
+                text("""
+                    UPDATE publishing_intents
+                    SET status = 'published',
+                        external_post_id = :external_post_id,
+                        external_url = :external_url,
+                        published_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE social_post_id = :post_id
+                """),
+                {
+                    "post_id": post["id"],
+                    "external_post_id": external_post_id,
+                    "external_url": url,
+                },
+            )
+            await self.db.commit()
+        except Exception as intent_err:
+            logger.warning("Could not sync publishing_intent for published post %s: %s", post["id"], intent_err)
         logger.info("Published post %s to %s: %s", post["id"], post["provider"], url)
         capture_event(
             "social_post_published",
@@ -1139,6 +1159,25 @@ class SocialService:
             await self.repo.update_post(
                 self.db, post["id"], status="failed", error_message=message, **handle_fields
             )
+            try:
+                await self.db.execute(
+                    text("""
+                        UPDATE publishing_intents
+                        SET status = 'failed',
+                            last_error = :error_message,
+                            attempts = :attempts,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE social_post_id = :post_id
+                    """),
+                    {
+                        "post_id": post["id"],
+                        "error_message": message[:500],
+                        "attempts": attempts,
+                    },
+                )
+                await self.db.commit()
+            except Exception as intent_err:
+                logger.warning("Could not sync publishing_intent failure for post %s: %s", post["id"], intent_err)
             logger.error("Publish failed for post %s: %s", post["id"], message)
         return await self.repo.get_post(self.db, post["id"]) or post
 

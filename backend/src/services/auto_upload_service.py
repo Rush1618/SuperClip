@@ -97,17 +97,41 @@ class AutoUploadService:
             }
 
         from ..repositories.task_repository import TaskRepository
+        from ..repositories.source_repository import SourceRepository
+
         task = await TaskRepository.get_task_by_id(self.db, task_id)
         source_id = task.get("source_id") or task_id if task else task_id
         source_platform = task.get("source_type") or "youtube" if task else "youtube"
+        external_source_id = source_id
+
+        if task and task.get("source_id"):
+            source_record = await SourceRepository.get_source_by_id(self.db, task["source_id"])
+            if source_record and source_record.get("url"):
+                source_url = source_record["url"]
+                import re
+                yt_match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})(?:[&?]|$)", source_url)
+                if yt_match:
+                    external_source_id = yt_match.group(1)
+                else:
+                    external_source_id = source_url
+            if source_record and source_record.get("type"):
+                source_platform = source_record["type"]
 
         rights_check = await self.rights_service.check_rights_permission(
-            source_id=source_id,
+            source_id=external_source_id,
             platform=source_platform,
             operation="publish",
             user_id=user_id,
             team_id=team_id,
         )
+        if not rights_check["allowed"] and external_source_id != source_id:
+            rights_check = await self.rights_service.check_rights_permission(
+                source_id=source_id,
+                platform=source_platform,
+                operation="publish",
+                user_id=user_id,
+                team_id=team_id,
+            )
         if not rights_check["allowed"]:
             logger.warning(
                 "Auto-upload blocked for clip %s (task %s): %s",
@@ -226,6 +250,30 @@ class AutoUploadService:
                 else:
                     logger.info("Recovering orphaned pending publishing intent %s for clip %s to %s", row["id"], clip_id, provider)
                     intent_id = row["id"]
+
+            # Prevent duplicate post creation if a social_post record already exists
+            existing_post_res = await self.db.execute(
+                text("SELECT id, status, external_url FROM social_posts WHERE clip_id = :clip_id AND social_account_id = :acc_id"),
+                {"clip_id": clip_id, "acc_id": acc["id"]},
+            )
+            existing_post = existing_post_res.mappings().first()
+            if existing_post:
+                if intent_id:
+                    await self.db.execute(
+                        text("UPDATE publishing_intents SET social_post_id = :post_id, status = :status WHERE id = :id"),
+                        {"id": intent_id, "post_id": existing_post["id"], "status": existing_post["status"]},
+                    )
+                    await self.db.commit()
+                created_posts.append({
+                    "post_id": existing_post["id"],
+                    "intent_id": intent_id or str(uuid4()),
+                    "provider": provider,
+                    "account_name": acc.get("account_name") or acc.get("username"),
+                    "status": existing_post["status"],
+                    "external_url": existing_post.get("external_url"),
+                    "title": clip.get("title", "Clip"),
+                })
+                continue
 
             try:
                 # 1. Generate optimized caption & title for platform
@@ -463,8 +511,11 @@ async def maybe_trigger_auto_upload(
 
     settings = task.get("create_settings") or {}
     workflow_settings = task.get("workflow_settings") or {}
+    workflow_options = task.get("workflow_options") or {}
     auto_upload_enabled = bool(
-        workflow_settings.get("auto_upload") or settings.get("auto_upload")
+        workflow_settings.get("auto_upload")
+        or settings.get("auto_upload")
+        or workflow_options.get("auto_upload")
     )
 
     # Check user/workspace persistent automation preferences if not explicitly set on task

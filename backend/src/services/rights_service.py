@@ -232,10 +232,11 @@ class RightsService:
             raise ValueError(f"Invalid rights_state '{rights_state}'. Allowed: {sorted(RIGHTS_STATES)}")
 
         if rights_state in ("creator_authorized", "licensed"):
-            if not permission_source and not permission_evidence:
+            evidence = (permission_evidence or "").strip()
+            if not evidence or evidence.lower() in ("none", "null", "undefined", "creator_agreement"):
                 raise ValueError(
-                    f"Verifiable permission evidence or source reference (e.g. agreement ID, creator license URL, "
-                    f"or written authorization) is required to register content under '{rights_state}'."
+                    f"Verifiable permission evidence (e.g. agreement URL, signed licensing reference, "
+                    f"or channel authorization document) is required to register content under '{rights_state}'."
                 )
 
         ops = permitted_operations or ["analyze", "clip", "publish"]
