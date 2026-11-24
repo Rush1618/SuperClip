@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -439,6 +440,7 @@ class AutopilotService:
                             "autopilot_rule_id": rule_id,
                         },
                     )
+                    processing_job_id = f"{task_id}:{secrets.token_hex(16)}"
                     await TaskRepository.save_source_metadata(
                         self.db,
                         task_id,
@@ -450,12 +452,12 @@ class AutopilotService:
                             "discovered_channel_id": channel_id,
                             "virality_score": score,
                             "rights_state": candidate_state,
+                            "processing_job_id": processing_job_id,
                         },
                     )
 
-                    processing_job_id = None
                     try:
-                        processing_job_id = await JobQueue.enqueue_processing_job(
+                        await JobQueue.enqueue_processing_job(
                             "process_video_task",
                             processing_workflow,
                             task_id,
@@ -471,6 +473,7 @@ class AutopilotService:
                             True,
                             None,
                             "auto",
+                            _job_id=processing_job_id,
                         )
                     except Exception as q_err:
                         logger.error("Could not enqueue autopilot task %s to worker: %s", task_id, q_err)
@@ -484,24 +487,6 @@ class AutopilotService:
                         )
                         rejected_reasons["worker_enqueue_failed"] = rejected_reasons.get("worker_enqueue_failed", 0) + 1
                         continue
-
-                    # Persist processing_job_id on task source metadata with retry
-                    # so a transient DB error does not drop recovery tracking or mark the queued job as failed
-                    if processing_job_id:
-                        saved = False
-                        for attempt in range(3):
-                            try:
-                                await TaskRepository.save_source_metadata(
-                                    self.db,
-                                    task_id,
-                                    {"processing_job_id": processing_job_id},
-                                )
-                                saved = True
-                                break
-                            except Exception as meta_err:
-                                logger.warning("Retry %d: could not persist processing_job_id for task %s: %s", attempt + 1, task_id, meta_err)
-                        if not saved:
-                            logger.error("Failed to persist processing_job_id for task %s after retries", task_id)
 
                     tasks_created += 1
                     logger.info(

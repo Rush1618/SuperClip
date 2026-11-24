@@ -37,8 +37,30 @@ async def test_auto_upload_clip_no_connected_accounts(monkeypatch):
     db = AsyncMock()
     service = AutoUploadService(db=db)
     service.social_service.list_connections = AsyncMock(return_value=[])
+    service.rights_service.check_rights_permission = AsyncMock(
+        return_value={
+            "allowed": True,
+            "rights_state": "creator_authorized",
+            "reason": "Test permission",
+        }
+    )
 
-    with patch("src.repositories.clip_repository.ClipRepository.get_clip_by_id", new=AsyncMock(return_value={"id": "clip-1", "task_id": "task-1"})):
+    with (
+        patch(
+            "src.repositories.clip_repository.ClipRepository.get_clip_by_id",
+            new=AsyncMock(return_value={"id": "clip-1", "task_id": "task-1"}),
+        ),
+        patch(
+            "src.repositories.task_repository.TaskRepository.get_task_by_id",
+            new=AsyncMock(
+                return_value={
+                    "id": "task-1",
+                    "source_id": None,
+                    "source_type": "youtube",
+                }
+            ),
+        ),
+    ):
         res = await service.auto_upload_clip("user-123", task_id="task-1", clip_id="clip-1")
         assert res["status"] == "no_connected_accounts"
         assert "no social accounts" in res["message"]

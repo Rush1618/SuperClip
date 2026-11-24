@@ -36,7 +36,7 @@ async def test_rights_evidence_validation():
     service = RightsService(db)
 
     # Empty evidence must be rejected for creator_authorized
-    with pytest.raises(ValueError, match="Verifiable permission evidence"):
+    with pytest.raises(ValueError, match="Evidence verification failed"):
         await service.register_source_rights(
             user_id="u1",
             source_id="yt-123",
@@ -46,7 +46,7 @@ async def test_rights_evidence_validation():
         )
 
     # Placeholder string 'creator_agreement' must be rejected
-    with pytest.raises(ValueError, match="Verifiable permission evidence"):
+    with pytest.raises(ValueError, match="Evidence verification failed"):
         await service.register_source_rights(
             user_id="u1",
             source_id="yt-123",
@@ -186,28 +186,20 @@ async def test_autopilot_rule_enqueues_processing_job_and_persists_job_id():
         assert create_kwargs["workflow_options"]["auto_upload"] is True
         assert create_kwargs["workflow_options"]["autopilot_rule_id"] == "rule-42"
 
-        # Check metadata calls: 1 for initial source info, 1 for processing_job_id
-        assert mock_save_meta.await_count == 2
-        mock_save_meta.assert_has_calls([
-            call(
-                db,
-                "task-999",
-                {
-                    "autopilot_rule_id": "rule-42",
-                    "discovered_title": "Quantum AI Breakthrough",
-                    "discovered_platform": "youtube",
-                    "discovered_source_id": "vid-12345",
-                    "discovered_channel_id": "",
-                    "virality_score": 92,
-                    "rights_state": "owned",
-                },
-            ),
-            call(
-                db,
-                "task-999",
-                {"processing_job_id": "job-555"},
-            ),
-        ])
+        # Check metadata calls: 1 call persisting source details and deterministic processing_job_id atomically before enqueue
+        assert mock_save_meta.await_count == 1
+        save_call_args = mock_save_meta.await_args.args
+        assert save_call_args[0] == db
+        assert save_call_args[1] == "task-999"
+        saved_metadata = save_call_args[2]
+        assert saved_metadata["autopilot_rule_id"] == "rule-42"
+        assert saved_metadata["discovered_title"] == "Quantum AI Breakthrough"
+        assert saved_metadata["discovered_platform"] == "youtube"
+        assert saved_metadata["discovered_source_id"] == "vid-12345"
+        assert saved_metadata["virality_score"] == 92
+        assert saved_metadata["rights_state"] == "owned"
+        assert saved_metadata["processing_job_id"].startswith("task-999:")
+        persisted_job_id = saved_metadata["processing_job_id"]
 
         mock_enqueue.assert_awaited_once_with(
             "process_video_task",
@@ -225,6 +217,7 @@ async def test_autopilot_rule_enqueues_processing_job_and_persists_job_id():
             True,
             None,
             "auto",
+            _job_id=persisted_job_id,
         )
 
 
