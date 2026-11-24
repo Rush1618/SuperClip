@@ -291,48 +291,6 @@ class AutopilotService:
                 "rule_id": rule_id,
             }
 
-        rule_sources = rule.get("sources")
-        if isinstance(rule_sources, str):
-            try:
-                rule_sources = json.loads(rule_sources)
-            except Exception:
-                rule_sources = []
-        rule_sources = [s.lower().strip() for s in (rule_sources or []) if s]
-
-        rule_channels = rule.get("channels")
-        if isinstance(rule_channels, str):
-            try:
-                rule_channels = json.loads(rule_channels)
-            except Exception:
-                rule_channels = []
-        rule_channels = [c.lower().strip() for c in (rule_channels or []) if c]
-
-        rule_languages = rule.get("languages")
-        if isinstance(rule_languages, str):
-            try:
-                rule_languages = json.loads(rule_languages)
-            except Exception:
-                rule_languages = []
-        rule_languages = [lang.lower().strip() for lang in (rule_languages or []) if lang]
-
-        rule_keywords = rule.get("keywords")
-        if isinstance(rule_keywords, str):
-            try:
-                rule_keywords = json.loads(rule_keywords)
-            except Exception:
-                rule_keywords = []
-        rule_keywords = [k.lower().strip() for k in (rule_keywords or []) if k]
-
-        rule_excluded_keywords = rule.get("excluded_keywords")
-        if isinstance(rule_excluded_keywords, str):
-            try:
-                rule_excluded_keywords = json.loads(rule_excluded_keywords)
-            except Exception:
-                rule_excluded_keywords = []
-        rule_excluded_keywords = [k.lower().strip() for k in (rule_excluded_keywords or []) if k]
-
-        min_rights_status = rule.get("min_rights_status") or "creator_authorized"
-
         # 1. Discover potential sources from trending connectors
         candidates = await self.trending_service.fetch_worldwide_trending_videos(
             niche=niche,
@@ -347,48 +305,16 @@ class AutopilotService:
 
         from ..repositories.source_repository import SourceRepository
         from ..repositories.task_repository import TaskRepository
-        from ..workers.job_queue import JobQueue
-
-        RIGHTS_RANK = {
-            "public_domain": 4,
-            "licensed": 3,
-            "creator_authorized": 2,
-            "fair_use_presumed": 1,
-            "unauthorized": 0,
-        }
 
         for item in candidates:
-            platform = (item.get("platform") or "youtube").lower().strip()
-            if rule_sources and platform not in rule_sources:
-                rejected_reasons["source_platform_mismatch"] = rejected_reasons.get("source_platform_mismatch", 0) + 1
-                continue
-
-            channel_id = str(item.get("channel_id") or item.get("channel") or "").lower().strip()
-            channel_title = str(item.get("channel_title") or "").lower().strip()
-            if rule_channels and not any(c in channel_id or c in channel_title for c in rule_channels):
-                rejected_reasons["channel_mismatch"] = rejected_reasons.get("channel_mismatch", 0) + 1
-                continue
-
-            item_lang = str(item.get("language") or item.get("lang") or "").lower().strip()
-            if rule_languages and item_lang and not any(l == item_lang or item_lang.startswith(l) for l in rule_languages):
-                rejected_reasons["language_mismatch"] = rejected_reasons.get("language_mismatch", 0) + 1
-                continue
-
-            title_and_desc = f"{item.get('title', '')} {item.get('description', '')}".lower()
-            if rule_keywords and not any(kw in title_and_desc for kw in rule_keywords):
-                rejected_reasons["keywords_missing"] = rejected_reasons.get("keywords_missing", 0) + 1
-                continue
-
-            if rule_excluded_keywords and any(ekw in title_and_desc for ekw in rule_excluded_keywords):
-                rejected_reasons["excluded_keyword_present"] = rejected_reasons.get("excluded_keyword_present", 0) + 1
-                continue
-
             score = item.get("virality_score", 0)
             if score < min_score:
                 rejected_reasons["score_below_threshold"] = rejected_reasons.get("score_below_threshold", 0) + 1
                 continue
 
             source_id = item.get("id") or item.get("video_id")
+            platform = item.get("platform", "youtube")
+            channel_id = item.get("channel_id") or item.get("channel")
 
             # 2. Check rights & authorization
             rights = await self.rights_service.check_rights_permission(
@@ -405,11 +331,6 @@ class AutopilotService:
                 rejected_reasons[f"rights_{reason_key}"] = rejected_reasons.get(f"rights_{reason_key}", 0) + 1
                 continue
 
-            candidate_state = rights.get("rights_state", "unauthorized")
-            if RIGHTS_RANK.get(candidate_state, 0) < RIGHTS_RANK.get(min_rights_status, 2):
-                rejected_reasons["rights_below_min_status"] = rejected_reasons.get("rights_below_min_status", 0) + 1
-                continue
-
             eligible_sources += 1
 
             # 3. Create task if within daily quota and active concurrency budget
@@ -423,13 +344,12 @@ class AutopilotService:
                         title=source_title,
                         url=raw_url,
                     )
-                    processing_workflow = rule.get("processing_workflow") or "highlights"
                     task_id = await TaskRepository.create_task(
                         self.db,
                         user_id=user_id,
                         source_id=source_record_id,
                         status="queued",
-                        workflow=processing_workflow,
+                        workflow=rule.get("processing_workflow") or "highlights",
                         team_id=team_id,
                         workflow_options={
                             "auto_upload": True,
@@ -437,43 +357,8 @@ class AutopilotService:
                             "autopilot_rule_id": rule_id,
                         },
                     )
-                    await TaskRepository.save_source_metadata(
-                        self.db,
-                        task_id,
-                        {
-                            "autopilot_rule_id": rule_id,
-                            "discovered_title": source_title,
-                            "discovered_platform": platform,
-                            "discovered_source_id": source_id,
-                            "discovered_channel_id": channel_id,
-                            "virality_score": score,
-                            "rights_state": candidate_state,
-                        },
-                    )
-
-                    try:
-                        await JobQueue.enqueue_processing_job(
-                            "process_video_task",
-                            processing_workflow,
-                            task_id,
-                            raw_url,
-                            platform,
-                            user_id,
-                            None,
-                            None,
-                            None,
-                            "default",
-                            processing_workflow,
-                            "vertical",
-                            True,
-                            None,
-                            "auto",
-                        )
-                    except Exception as q_err:
-                        logger.warning("Could not enqueue autopilot task %s to worker: %s", task_id, q_err)
-
                     tasks_created += 1
-                    logger.info("Autopilot rule %s created and enqueued task %s for source %s", rule_id, task_id, source_id)
+                    logger.info("Autopilot rule %s created task %s for source %s", rule_id, task_id, source_id)
                 except Exception as task_err:
                     logger.warning("Failed to create autopilot task: %s", task_err)
 
