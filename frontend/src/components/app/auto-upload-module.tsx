@@ -87,11 +87,11 @@ export function AutoUploadModule({
       const data = await res.json();
       if (data.status === "success" || data.status === "completed") {
         toast.success(
-          `🚀 Auto-Uploaded! Sent to ${data.uploaded_count || data.total_posts_created || 1} platform(s).`
+          `🚀 Queued for Publishing! Sent to ${data.uploaded_count || data.total_posts_created || 1} platform(s).`
         );
         onUploaded?.();
       } else {
-        toast.info(data.message || "Auto-upload complete");
+        toast.info(data.message || "Publishing request queued");
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Auto-upload failed");
@@ -194,7 +194,7 @@ export function AutoUploadModule({
             ) : (
               <Send className="size-3" />
             )}
-            <span>{clipId ? "Auto-Upload Clip" : "Auto-Upload All Clips"}</span>
+            <span>{clipId ? "Queue Clip for Publishing" : "Queue All for Publishing"}</span>
           </Button>
         )}
       </div>

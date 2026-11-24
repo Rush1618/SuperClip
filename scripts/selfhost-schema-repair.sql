@@ -325,6 +325,7 @@ CREATE TABLE IF NOT EXISTS publishing_intents (
     task_id VARCHAR(36) REFERENCES tasks(id) ON DELETE CASCADE,
     clip_id VARCHAR(36) NOT NULL,
     social_account_id VARCHAR(36) REFERENCES social_accounts(id) ON DELETE CASCADE,
+    social_post_id VARCHAR(36) REFERENCES social_posts(id) ON DELETE SET NULL,
     provider VARCHAR(20) NOT NULL,
     idempotency_key VARCHAR(128) NOT NULL UNIQUE,
     status VARCHAR(40) NOT NULL DEFAULT 'pending',
@@ -345,6 +346,8 @@ CREATE TABLE IF NOT EXISTS publishing_intents (
 CREATE INDEX IF NOT EXISTS idx_publishing_intents_status ON publishing_intents (status, scheduled_for);
 CREATE INDEX IF NOT EXISTS idx_publishing_intents_task_clip ON publishing_intents (task_id, clip_id);
 CREATE INDEX IF NOT EXISTS idx_publishing_intents_user_id ON publishing_intents (user_id);
+ALTER TABLE publishing_intents ADD COLUMN IF NOT EXISTS social_post_id VARCHAR(36) REFERENCES social_posts(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_publishing_intents_social_post_id ON publishing_intents (social_post_id);
 
 CREATE TABLE IF NOT EXISTS live_stream_sessions (
     id VARCHAR(36) PRIMARY KEY DEFAULT uuid_generate_v4()::text,

@@ -114,20 +114,43 @@ class AutopilotService:
         row = result.mappings().first()
         return dict(row) if row else {"id": rule_id, "status": "created"}
 
-    async def toggle_rule(self, rule_id: str, enabled: bool) -> bool:
-        """Pause or resume a specific autopilot rule."""
-        query = text(
-            """
-            UPDATE autopilot_rules
-            SET enabled = :enabled, updated_at = CURRENT_TIMESTAMP
-            WHERE id = :id
-            """
-        )
-        res = await self.db.execute(query, {"id": rule_id, "enabled": enabled})
+    async def toggle_rule(
+        self,
+        rule_id: str,
+        enabled: bool,
+        user_id: Optional[str] = None,
+    ) -> bool:
+        """Pause or resume a specific autopilot rule with authorization check."""
+        if user_id:
+            query = text(
+                """
+                UPDATE autopilot_rules
+                SET enabled = :enabled, updated_at = CURRENT_TIMESTAMP
+                WHERE id = :id AND (
+                    user_id = :user_id OR
+                    team_id IN (SELECT team_id FROM team_members WHERE user_id = :user_id)
+                )
+                """
+            )
+            res = await self.db.execute(query, {"id": rule_id, "enabled": enabled, "user_id": user_id})
+        else:
+            query = text(
+                """
+                UPDATE autopilot_rules
+                SET enabled = :enabled, updated_at = CURRENT_TIMESTAMP
+                WHERE id = :id
+                """
+            )
+            res = await self.db.execute(query, {"id": rule_id, "enabled": enabled})
         await self.db.commit()
         return res.rowcount > 0
 
-    async def execute_rule(self, rule_id: str) -> Dict[str, Any]:
+    async def execute_rule(
+        self,
+        rule_id: str,
+        user_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Execute an active Autopilot rule:
         1. Discover sources matching niche, keywords, and score.
@@ -136,8 +159,23 @@ class AutopilotService:
         4. Spawn processing task with Auto-Publish configured.
         5. Persist execution outcome in autopilot_executions.
         """
-        rule_res = await self.db.execute(
-            text("SELECT * FROM autopilot_rules WHERE id = :id"), {"id": rule_id}
+        if user_id:
+            rule_res = await self.db.execute(
+                text(
+                    """
+                    SELECT * FROM autopilot_rules
+                    WHERE id = :id AND (
+                        user_id = :user_id OR
+                        team_id IN (SELECT team_id FROM team_members WHERE user_id = :user_id)
+                    )
+                    """
+                ),
+                {"id": rule_id, "user_id": user_id},
+            )
+        else:
+            rule_res = await self.db.execute(
+                text("SELECT * FROM autopilot_rules WHERE id = :id"), {"id": rule_id}
+            )
         )
         rule = rule_res.mappings().first()
         if not rule or not rule["enabled"]:
@@ -284,3 +322,27 @@ class AutopilotService:
             "total_posts_published": stats["total_published"] if stats else 0,
             "rules": rules,
         }
+
+    @classmethod
+    async def execute_due_rules(cls, db: AsyncSession) -> List[Dict[str, Any]]:
+        """Query enabled autopilot rules and execute eligible candidates."""
+        service = cls(db)
+        query = text(
+            """
+            SELECT id, user_id, team_id
+            FROM autopilot_rules
+            WHERE enabled = true
+            ORDER BY last_run_at ASC NULLS FIRST
+            LIMIT 5
+            """
+        )
+        result = await db.execute(query)
+        rows = result.fetchall()
+        executed = []
+        for row in rows:
+            try:
+                res = await service.execute_rule(row.id, user_id=row.user_id, team_id=row.team_id)
+                executed.append(res)
+            except Exception as e:
+                logger.error("Error executing autopilot rule %s: %s", row.id, e)
+        return executed

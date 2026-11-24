@@ -56,6 +56,55 @@ interface UserPreferences {
   notifyOnPublish: boolean;
 }
 
+interface HardwareTelemetry {
+  gpu_available: boolean;
+  gpu_name?: string;
+  vram_total_mb?: number;
+  cpu_cores?: number;
+  ram_available_mb?: number;
+  device?: string;
+}
+
+interface AutopilotRuleItem {
+  id: string;
+  name: string;
+  enabled: boolean;
+  niche: string;
+  min_trend_score: number;
+  clip_count: number;
+  daily_limit: number;
+  last_run_at?: string;
+}
+
+interface AutopilotOverviewData {
+  total_rules: number;
+  active_rules_count: number;
+  total_executions: number;
+  total_sources_scanned: number;
+  total_eligible_sources: number;
+  total_tasks_created: number;
+  total_posts_published: number;
+}
+
+interface PublishingQueueItem {
+  id: string;
+  clip_id: string;
+  provider: string;
+  status: string;
+  external_url?: string;
+  last_error?: string;
+  created_at: string;
+}
+
+interface SourceRightsItem {
+  id: string;
+  source_id: string;
+  platform: string;
+  rights_state: string;
+  permission_source?: string;
+  created_at?: string;
+}
+
 export default function SettingsPage() {
   const [fontFamily, setFontFamily] = useState("TikTokSans-Regular");
   const [fontSize, setFontSize] = useState(24);
@@ -95,11 +144,11 @@ export default function SettingsPage() {
   const [localOnlyMode, setLocalOnlyMode] = useState(false);
 
   // Operational Telemetry, Autopilot, Rights & Queue states
-  const [telemetry, setTelemetry] = useState<any>(null);
-  const [autopilotRules, setAutopilotRules] = useState<any[]>([]);
-  const [autopilotOverview, setAutopilotOverview] = useState<any>(null);
-  const [publishingQueue, setPublishingQueue] = useState<any[]>([]);
-  const [sourceRights, setSourceRights] = useState<any[]>([]);
+  const [telemetry, setTelemetry] = useState<HardwareTelemetry | null>(null);
+  const [autopilotRules, setAutopilotRules] = useState<AutopilotRuleItem[]>([]);
+  const [autopilotOverview, setAutopilotOverview] = useState<AutopilotOverviewData | null>(null);
+  const [publishingQueue, setPublishingQueue] = useState<PublishingQueueItem[]>([]);
+  const [sourceRights, setSourceRights] = useState<SourceRightsItem[]>([]);
   const [isTestingModel, setIsTestingModel] = useState(false);
   const [createRuleOpen, setCreateRuleOpen] = useState(false);
   const [newRuleName, setNewRuleName] = useState("");
@@ -312,12 +361,16 @@ export default function SettingsPage() {
       backendVal = parseInt(String(val), 10) || 3;
     }
     try {
-      await fetch("/api/automation/preferences", {
+      const res = await fetch("/api/automation/preferences", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ [backendKey]: backendVal }),
       });
-      toast.success("Preferences saved to account");
+      if (res.ok) {
+        toast.success("Preferences saved to account");
+      } else {
+        toast.success("Settings saved locally");
+      }
     } catch {
       toast.success("Settings saved locally");
     }
@@ -375,15 +428,6 @@ export default function SettingsPage() {
       }
     } catch {}
   }, []);
-
-  const updateAutoClipSetting = (key: string, val: string | number | boolean) => {
-    try {
-      const current = JSON.parse(localStorage.getItem("supoclip_autoclip_settings") || "{}");
-      current[key] = val;
-      localStorage.setItem("supoclip_autoclip_settings", JSON.stringify(current));
-      toast.success("Auto-Clip settings saved");
-    } catch {}
-  };
 
   const t = useTranslations("settings");
   const common = useTranslations("common");

@@ -87,6 +87,15 @@ class AutoUploadService:
             return {"status": "error", "message": f"Clip {clip_id} not found", "posts": []}
 
         # Verify source rights before distributing
+        # 0. Check global social publishing feature gate
+        if os.getenv("SOCIAL_PUBLISHING_ACCESS", "off").lower() in ("off", "false", "0"):
+            return {
+                "status": "disabled",
+                "message": "Social publishing is currently disabled by administrator (SOCIAL_PUBLISHING_ACCESS=off).",
+                "clip_id": clip_id,
+                "posts": [],
+            }
+
         from ..repositories.task_repository import TaskRepository
         task = await TaskRepository.get_task_by_id(self.db, task_id)
         source_id = task.get("source_id") or task_id if task else task_id
@@ -158,14 +167,15 @@ class AutoUploadService:
 
             # Check if intent already exists in outbox
             existing_intent = await self.db.execute(
-                text("SELECT id, status, external_post_id, external_url FROM publishing_intents WHERE idempotency_key = :k"),
+                text("SELECT id, social_post_id, status, external_post_id, external_url FROM publishing_intents WHERE idempotency_key = :k"),
                 {"k": idempotency_key},
             )
             row = existing_intent.mappings().first()
             if row:
                 logger.info("Publishing intent already exists for clip %s to %s (status: %s)", clip_id, provider, row["status"])
                 created_posts.append({
-                    "post_id": row["id"],
+                    "post_id": row.get("social_post_id") or row["id"],
+                    "intent_id": row["id"],
                     "provider": provider,
                     "account_name": acc.get("account_name") or acc.get("username"),
                     "status": row["status"],
@@ -198,9 +208,14 @@ class AutoUploadService:
                     logger.debug("Automatic caption draft error on %s, using fallback: %s", provider, cap_err)
                     draft_caption = f"{draft_title}\n\n{' '.join(hashtags)}"
 
-                # 2. Record transactional publishing intent in PostgreSQL
+                # TikTok unaudited apps enforce private visibility
+                effective_privacy = privacy_level
+                if provider == "tiktok" and effective_privacy == "public":
+                    effective_privacy = "private"
+
+                # 2. Record transactional publishing intent in PostgreSQL with race protection
                 intent_id = str(uuid4())
-                await self.db.execute(
+                insert_res = await self.db.execute(
                     text(
                         """
                         INSERT INTO publishing_intents (
@@ -213,6 +228,7 @@ class AutoUploadService:
                             :privacy_level, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                         )
                         ON CONFLICT (idempotency_key) DO NOTHING
+                        RETURNING id
                         """
                     ),
                     {
@@ -227,10 +243,30 @@ class AutoUploadService:
                         "title": draft_title,
                         "caption": draft_caption,
                         "hashtags": hashtags,
-                        "privacy_level": privacy_level,
+                        "privacy_level": effective_privacy,
                     },
                 )
                 await self.db.commit()
+                inserted_row = insert_res.fetchone()
+
+                if not inserted_row:
+                    # Concurrent insert handled by another worker
+                    existing_intent = await self.db.execute(
+                        text("SELECT id, social_post_id, status, external_url FROM publishing_intents WHERE idempotency_key = :k"),
+                        {"k": idempotency_key},
+                    )
+                    row = existing_intent.mappings().first()
+                    if row:
+                        created_posts.append({
+                            "post_id": row.get("social_post_id") or row["id"],
+                            "intent_id": row["id"],
+                            "provider": provider,
+                            "account_name": acc.get("account_name") or acc.get("username"),
+                            "status": row["status"],
+                            "external_url": row.get("external_url"),
+                            "title": draft_title,
+                        })
+                    continue
 
                 # 3. Create the post record and queue it for publishing
                 post = await self.social_service.create_post(
@@ -241,15 +277,19 @@ class AutoUploadService:
                     title=draft_title,
                     caption=draft_caption,
                     hashtags=hashtags,
-                    privacy_level=privacy_level,
+                    privacy_level=effective_privacy,
                     scheduled_for=None,  # Immediate publication
                     team_id=team_id,
                 )
 
-                # Update publishing_intent status to queued
+                # Link social_post_id and mark status queued on intent
                 await self.db.execute(
-                    text("UPDATE publishing_intents SET status = 'queued', updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
-                    {"id": intent_id},
+                    text("""
+                        UPDATE publishing_intents
+                        SET social_post_id = :post_id, status = 'queued', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = :id
+                    """),
+                    {"id": intent_id, "post_id": post["id"]},
                 )
                 await self.db.commit()
 

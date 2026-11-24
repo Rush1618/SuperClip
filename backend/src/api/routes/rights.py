@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...auth_headers import get_authenticated_user_id
 from ...config import Config, get_config
 from ...database import get_db
+from ...repositories.team_repository import TeamRepository
 from ...services.rights_service import RIGHTS_STATES, RightsService
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,10 @@ async def list_source_rights(
 ) -> Dict[str, Any]:
     """List registered source rights and creator permissions for the current user/workspace."""
     user_id = get_authenticated_user_id(request, config)
+    if team_id:
+        is_mem = await TeamRepository.is_member(db, team_id, user_id)
+        if not is_mem:
+            raise HTTPException(status_code=403, detail="You do not belong to this team workspace")
     service = RightsService(db)
     records = await service.list_user_source_rights(user_id=user_id, team_id=team_id, limit=limit)
     return {
@@ -64,6 +69,10 @@ async def check_source_permission(
 ) -> Dict[str, Any]:
     """Evaluate whether an operation (analyze, clip, publish) is permitted for a source."""
     user_id = get_authenticated_user_id(request, config)
+    if team_id:
+        is_mem = await TeamRepository.is_member(db, team_id, user_id)
+        if not is_mem:
+            raise HTTPException(status_code=403, detail="You do not belong to this team workspace")
     service = RightsService(db)
     decision = await service.check_rights_permission(
         source_id=source_id,
@@ -85,6 +94,10 @@ async def register_source_rights(
 ) -> Dict[str, Any]:
     """Register creator authorization or ownership for a media source."""
     user_id = get_authenticated_user_id(request, config)
+    if body.team_id:
+        is_mem = await TeamRepository.is_member(db, body.team_id, user_id)
+        if not is_mem:
+            raise HTTPException(status_code=403, detail="You do not belong to this team workspace")
     if body.rights_state not in RIGHTS_STATES:
         raise HTTPException(
             status_code=400,

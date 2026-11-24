@@ -261,15 +261,15 @@ def fetch_from_youtube_data_api(
     limit: int = 25
 ) -> List[Dict[str, Any]]:
     """Fetch live trending videos directly from official YouTube Data API v3 with genuine metrics."""
-    reg = region.upper().strip() if region else "US"
-    reg_code = "US" if reg == "GLOBAL" else reg
+    reg = region.upper().strip() if region else "GLOBAL"
     params: Dict[str, str] = {
         "part": "snippet,contentDetails,statistics",
         "chart": "mostPopular",
-        "regionCode": reg_code,
         "maxResults": str(min(50, max(limit, 10))),
         "key": api_key,
     }
+    if reg != "GLOBAL":
+        params["regionCode"] = reg
     cat_id = YOUTUBE_CATEGORY_MAP.get(niche.lower().strip())
     if cat_id:
         params["videoCategoryId"] = cat_id
@@ -728,9 +728,7 @@ async def learn_from_trending_videos(ctx: Any = None, config: Any = None) -> Dic
         except Exception as exc:
             logger.warning("Local AI agent learning pass encountered: %s", exc)
 
-    memory["total_cycles"] = memory.get("total_cycles", 0) + 1
-    memory["last_learned_at"] = datetime.now(timezone.utc).isoformat()
-    await ViralLearningRepository.save_memory(memory)
+    # If parsing or AI generation failed, do not falsely increment cycle count
     return memory
 
 
@@ -738,3 +736,45 @@ def start_continuous_learning_agent(interval_seconds: int = 3600) -> Optional[as
     """Deprecated: Continuous viral learning is now scheduled as an ARQ cron task in cron_worker.py."""
     logger.debug("Viral learning is scheduled in cron_worker as an ARQ cron job.")
     return None
+
+
+class TrendingService:
+    """Service wrapper for trending discovery and platform connectors."""
+
+    def __init__(self, config: Optional[Config] = None):
+        self.config = config or get_config()
+
+    async def fetch_worldwide_trending_videos(
+        self,
+        niche: str = "all",
+        region: str = "GLOBAL",
+        limit: int = 15,
+    ) -> List[Dict[str, Any]]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: fetch_all_trending(platform="all", niche=niche, region=region, limit=limit),
+        )
+
+    async def fetch_youtube_trending(
+        self,
+        niche: str = "all",
+        region: str = "US",
+        limit: int = 15,
+    ) -> List[Dict[str, Any]]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: fetch_all_trending(platform="youtube", niche=niche, region=region, limit=limit),
+        )
+
+    async def fetch_twitch_clips(
+        self,
+        niche: str = "gaming",
+        limit: int = 15,
+    ) -> List[Dict[str, Any]]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: fetch_twitch_trending_clips(niche=niche, limit=limit),
+        )

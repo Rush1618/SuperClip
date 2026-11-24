@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -22,6 +23,25 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/models", tags=["models"])
 
 
+def _validate_ollama_base_url(url: str, config_url: Optional[str]) -> str:
+    """Validate Ollama URL to prevent SSRF against unauthorized hosts."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Ollama base URL must use http or https scheme")
+    hostname = (parsed.hostname or "").lower()
+    allowed_hosts = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
+    if config_url:
+        cfg_host = (urlparse(config_url).hostname or "").lower()
+        if cfg_host:
+            allowed_hosts.add(cfg_host)
+    if hostname not in allowed_hosts:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Host '{hostname}' is not permitted for Ollama testing. Must be local or configured OLLAMA_BASE_URL.",
+        )
+    return url.rstrip("/")
+
+
 class TestModelConnectionRequest(BaseModel):
     model_name: str = Field(..., max_length=120)
     ollama_base_url: Optional[str] = Field(None, max_length=255)
@@ -29,9 +49,11 @@ class TestModelConnectionRequest(BaseModel):
 
 @router.get("/capabilities")
 async def get_all_model_capabilities(
+    request: Request,
     config: Config = Depends(get_config),
 ) -> Dict[str, Any]:
     """Return capability registry for supported models and runtime output mode."""
+    get_authenticated_user_id(request, config)
     active_caps = get_model_capabilities(config.llm)
     return {
         "active_model": config.llm,
@@ -59,11 +81,13 @@ async def get_all_model_capabilities(
 
 @router.get("/ollama-local")
 async def discover_local_ollama_models(
+    request: Request,
     config: Config = Depends(get_config),
 ) -> Dict[str, Any]:
     """Query local Ollama daemon for actually installed models."""
-    ollama_url = config.ollama_base_url or "http://localhost:11434"
-    endpoint = f"{ollama_url.rstrip('/')}/api/tags"
+    get_authenticated_user_id(request, config)
+    ollama_url = _validate_ollama_base_url(config.ollama_base_url or "http://localhost:11434", config.ollama_base_url)
+    endpoint = f"{ollama_url}/api/tags"
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
             resp = await client.get(endpoint)
@@ -102,16 +126,19 @@ async def discover_local_ollama_models(
 
 @router.post("/test-connection")
 async def test_model_connection(
+    request: Request,
     payload: TestModelConnectionRequest,
     config: Config = Depends(get_config),
 ) -> Dict[str, Any]:
     """Verify live connectivity, response latency, and availability of a specific AI model."""
+    get_authenticated_user_id(request, config)
     start_time = time.monotonic()
     model = payload.model_name.strip()
 
     if model.startswith("ollama:"):
         model_tag = model.split(":", 1)[1]
-        base_url = (payload.ollama_base_url or config.ollama_base_url or "http://localhost:11434").rstrip("/")
+        raw_base = payload.ollama_base_url or config.ollama_base_url or "http://localhost:11434"
+        base_url = _validate_ollama_base_url(raw_base, config.ollama_base_url)
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
                 res = await client.get(f"{base_url}/api/tags")
@@ -163,6 +190,30 @@ async def test_model_connection(
         except Exception as exc:
             return {"connected": False, "model": model, "error": str(exc)}
 
+    if model.startswith("anthropic:"):
+        api_key = config.anthropic_api_key
+        if not api_key:
+            return {
+                "connected": False,
+                "model": model,
+                "error": "ANTHROPIC_API_KEY is not configured.",
+            }
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                res = await client.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                )
+                latency_ms = round((time.monotonic() - start_time) * 1000, 1)
+                return {
+                    "connected": res.status_code == 200,
+                    "model": model,
+                    "latency_ms": latency_ms,
+                    "status_code": res.status_code,
+                }
+        except Exception as exc:
+            return {"connected": False, "model": model, "error": str(exc)}
+
     # Default check
     return {
         "connected": True,
@@ -173,11 +224,15 @@ async def test_model_connection(
 
 
 @router.get("/telemetry")
-async def get_hardware_telemetry() -> Dict[str, Any]:
+async def get_hardware_telemetry(
+    request: Request,
+    config: Config = Depends(get_config),
+) -> Dict[str, Any]:
     """
     Return genuine hardware telemetry (CPU cores, RAM, GPU/CUDA detection).
     Never fabricates GPU models or active states if not physically present.
     """
+    get_authenticated_user_id(request, config)
     import os
     import psutil
 

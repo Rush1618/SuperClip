@@ -266,7 +266,29 @@ async def dispatch_scheduled_social_posts(ctx: Dict[str, Any]) -> Dict[str, Any]
             from ..services.autopilot_service import AutopilotService
             await AutopilotService.execute_due_rules(db)
         except Exception as e:
-            logger.debug("Autopilot due rules pass: %s", e)
+            logger.error("Autopilot due rules execution failed: %s", e)
+
+        # Check and process periodic viral pattern learning
+        try:
+            from datetime import datetime, timezone
+            from ..services.trending_service import learn_from_trending_videos
+            from ..repositories.viral_learning_repository import ViralLearningRepository
+            mem = await ViralLearningRepository.get_latest_memory(session=db)
+            last_ts = mem.get("last_learned_at")
+            should_learn = False
+            if not last_ts:
+                should_learn = True
+            else:
+                try:
+                    last_dt = datetime.fromisoformat(last_ts)
+                    if (datetime.now(timezone.utc) - last_dt).total_seconds() > 3600:
+                        should_learn = True
+                except Exception:
+                    should_learn = True
+            if should_learn:
+                await learn_from_trending_videos(ctx=ctx)
+        except Exception as e:
+            logger.error("Viral pattern learning scheduled pass failed: %s", e)
     return {
         "dispatched": len(dispatched),
         "pending_checked": resolved,

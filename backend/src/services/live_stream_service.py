@@ -42,6 +42,8 @@ async def _persist_live_session_and_event(
     payload: Dict[str, Any],
 ) -> None:
     """Persist active live monitoring sessions and real velocity events to PostgreSQL."""
+    if not user_id:
+        return
     try:
         from ..database import get_session_maker
         from sqlalchemy import text
@@ -50,24 +52,40 @@ async def _persist_live_session_and_event(
         async with sm() as db:
             await db.execute(
                 text("""
-                    INSERT INTO live_stream_sessions (id, user_id, channel, platform, stream_url, status, started_at, last_ping_at, metadata)
-                    VALUES (:id, :user_id, :channel, :platform, :stream_url, 'active', :started_at, NOW(), :metadata::jsonb)
-                    ON CONFLICT (id) DO UPDATE SET last_ping_at = NOW()
+                    INSERT INTO live_stream_sessions (
+                        id, user_id, channel_id, channel_name, platform, stream_url,
+                        status, started_at, peak_chat_velocity, metadata, updated_at
+                    )
+                    VALUES (
+                        :id, :user_id, :channel_id, :channel_name, :platform, :stream_url,
+                        'monitoring', :started_at, :velocity, CAST(:metadata AS jsonb), NOW()
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        updated_at = NOW(),
+                        peak_chat_velocity = GREATEST(live_stream_sessions.peak_chat_velocity, :velocity)
                 """),
                 {
                     "id": session_id,
                     "user_id": user_id,
-                    "channel": channel,
+                    "channel_id": channel.lower(),
+                    "channel_name": channel,
                     "platform": platform,
                     "stream_url": stream_url,
                     "started_at": started_dt,
+                    "velocity": velocity,
                     "metadata": json.dumps({"source": "live_monitor"}),
                 }
             )
             await db.execute(
                 text("""
-                    INSERT INTO live_events (id, session_id, event_type, stream_time_seconds, velocity_msgs_per_min, hype_score, top_emotes, payload, created_at)
-                    VALUES (:id, :session_id, :event_type, :stream_time, :velocity, :hype, :emotes, :payload::jsonb, NOW())
+                    INSERT INTO live_events (
+                        id, session_id, event_type, stream_time_seconds,
+                        chat_velocity, hype_score, details, status, created_at
+                    )
+                    VALUES (
+                        :id, :session_id, :event_type, :stream_time,
+                        :velocity, :hype, CAST(:details AS jsonb), 'detected', NOW()
+                    )
                 """),
                 {
                     "id": f"event-{uuid.uuid4().hex[:12]}",
@@ -76,8 +94,7 @@ async def _persist_live_session_and_event(
                     "stream_time": stream_time_sec,
                     "velocity": velocity,
                     "hype": hype_score,
-                    "emotes": top_emotes,
-                    "payload": json.dumps(payload),
+                    "details": json.dumps(payload),
                 }
             )
             await db.commit()

@@ -17,36 +17,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_VIRAL_MEMORY: Dict[str, Any] = {
     "version": "2.0",
-    "last_learned_at": datetime.now(timezone.utc).isoformat(),
-    "total_cycles": 1,
-    "total_videos_analyzed": 20,
-    "learned_hooks": [
-        "Curiosity gap: 'I never expected this to happen when...'",
-        "Pattern interrupt: 'Stop scrolling if you care about...'",
-        "Contrarian claim: 'Everyone thinks X, but the truth is completely different.'",
-        "Immediate payoff: 'Here is the exact reason why this changed everything.'",
-        "High-stakes storytelling: 'In the next 30 seconds, I'll show you how...'",
-    ],
-    "title_formulas": [
-        "I Tried [X] So You Don't Have To",
-        "The Real Truth About [Topic]",
-        "Why Nobody Is Talking About [X]",
-        "Don't Do [X] Until You Watch This",
-        "How [Person/Topic] Actually Happened",
-    ],
-    "retention_triggers": [
-        "Wait till you see what happened next...",
-        "I honestly couldn't believe this part.",
-        "Drop your thoughts in the comments 👇",
-        "If you've been in this situation, let me know below.",
-    ],
-    "trending_hashtags": [
-        "#fyp", "#shorts", "#viral", "#trending", "#youtube",
-        "#creator", "#mindblown", "#storytime", "#facts"
-    ],
-    "virality_boost_rules": "Score higher for clips opening with an energetic claim, direct question, or high-stakes reveal.",
-    "average_score_boost_pct": 18,
-    "status": "active_continuous_learning",
+    "last_learned_at": None,
+    "total_cycles": 0,
+    "total_videos_analyzed": 0,
+    "learned_hooks": [],
+    "title_formulas": [],
+    "retention_triggers": [],
+    "trending_hashtags": [],
+    "virality_boost_rules": "Score higher for energetic hooks, high-stakes curiosity, and strong retention spikes.",
+    "average_score_boost_pct": 0,
+    "status": "awaiting_initial_learning_cycle",
 }
 
 # In-memory fallback if PostgreSQL is temporarily unavailable or in local test fixtures
@@ -143,8 +123,8 @@ class ViralLearningRepository:
                     cycle_number, learned_hooks, title_formulas, retention_triggers,
                     trending_hashtags, virality_boost_rules, videos_analyzed_count, created_at
                 ) VALUES (
-                    :cycle_number, :learned_hooks::jsonb, :title_formulas::jsonb, :retention_triggers::jsonb,
-                    :trending_hashtags::jsonb, :virality_boost_rules, :videos_analyzed_count, NOW()
+                    :cycle_number, CAST(:learned_hooks AS jsonb), CAST(:title_formulas AS jsonb), CAST(:retention_triggers AS jsonb),
+                    CAST(:trending_hashtags AS jsonb), :virality_boost_rules, :videos_analyzed_count, NOW()
                 )
                 """
             ),

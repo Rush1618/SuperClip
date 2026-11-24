@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...auth_headers import get_authenticated_user_id
 from ...config import Config, get_config
 from ...database import get_db
+from ...repositories.team_repository import TeamRepository
 from ...services.autopilot_service import AutopilotService
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,10 @@ async def get_autopilot_overview(
 ) -> Dict[str, Any]:
     """Get operational status and stats for Autopilot."""
     user_id = get_authenticated_user_id(request, config)
+    if team_id:
+        is_mem = await TeamRepository.is_member(db, team_id, user_id)
+        if not is_mem:
+            raise HTTPException(status_code=403, detail="You do not belong to this team workspace")
     service = AutopilotService(db, config=config)
     return await service.get_autopilot_overview(user_id=user_id, team_id=team_id)
 
@@ -66,6 +71,10 @@ async def list_autopilot_rules(
 ) -> Dict[str, Any]:
     """List all Autopilot rules configured for user/team."""
     user_id = get_authenticated_user_id(request, config)
+    if team_id:
+        is_mem = await TeamRepository.is_member(db, team_id, user_id)
+        if not is_mem:
+            raise HTTPException(status_code=403, detail="You do not belong to this team workspace")
     service = AutopilotService(db, config=config)
     rules = await service.list_rules(user_id=user_id, team_id=team_id)
     return {"rules": rules, "count": len(rules)}
@@ -80,6 +89,10 @@ async def create_autopilot_rule(
 ) -> Dict[str, Any]:
     """Create a new Autopilot rule."""
     user_id = get_authenticated_user_id(request, config)
+    if body.team_id:
+        is_mem = await TeamRepository.is_member(db, body.team_id, user_id)
+        if not is_mem:
+            raise HTTPException(status_code=403, detail="You do not belong to this team workspace")
     service = AutopilotService(db, config=config)
     rule = await service.create_rule(
         user_id=user_id,
@@ -97,12 +110,12 @@ async def toggle_autopilot_rule(
     db: AsyncSession = Depends(get_db),
     config: Config = Depends(get_config),
 ) -> Dict[str, Any]:
-    """Pause or resume an Autopilot rule."""
+    """Pause or resume an Autopilot rule with ownership validation."""
     user_id = get_authenticated_user_id(request, config)
     service = AutopilotService(db, config=config)
-    success = await service.toggle_rule(rule_id=rule_id, enabled=body.enabled)
+    success = await service.toggle_rule(rule_id=rule_id, enabled=body.enabled, user_id=user_id)
     if not success:
-        raise HTTPException(status_code=404, detail="Rule not found or could not be updated")
+        raise HTTPException(status_code=404, detail="Rule not found or access denied")
     return {"status": "success", "rule_id": rule_id, "enabled": body.enabled}
 
 
@@ -113,8 +126,8 @@ async def run_autopilot_rule_now(
     db: AsyncSession = Depends(get_db),
     config: Config = Depends(get_config),
 ) -> Dict[str, Any]:
-    """Trigger an immediate execution of an Autopilot rule."""
+    """Trigger an immediate execution of an Autopilot rule with ownership validation."""
     user_id = get_authenticated_user_id(request, config)
     service = AutopilotService(db, config=config)
-    result = await service.execute_rule(rule_id=rule_id)
+    result = await service.execute_rule(rule_id=rule_id, user_id=user_id)
     return result
